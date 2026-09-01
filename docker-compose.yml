@@ -1,0 +1,26 @@
+# OCI 인스턴스에서 단일 컨테이너로 띄우는 구성. CPU 전용이라 GPU 관련 설정이 없다.
+services:
+  stt-pipe:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      SHARED_AUDIO_ROOT: /data/shared_audio
+      TTS_OUT_DIR: /data/audio
+      TTS_BASE_URL: /audio
+      HOST: 0.0.0.0
+      PORT: "8000"
+    volumes:
+      # 백엔드와 공유하는 사용자 음성 폴더. 호스트 경로는 기존에 합의된 /home/opc/containers/llm다.
+      - /home/opc/containers/llm:/data/shared_audio
+      # 이 서비스가 생성한 TTS 음성 파일
+      - tts-audio:/data/audio
+      # huggingface/whisper 모델 캐시 — 없으면 컨테이너 재시작마다 모델을 다시 받는다
+      - model-cache:/root/.cache
+    restart: unless-stopped
+
+volumes:
+  tts-audio:
+  model-cache:

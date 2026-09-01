@@ -1,0 +1,33 @@
+# operate/ 실행에 필요한 패키지. 이 파일과 같은 conda 환경(stt_pipe)의 실제
+# 설치 버전으로 고정했다 — 여기서 실제로 테스트를 통과한 조합이다.
+#
+# 주의 1: "whisper"라는 이름의 무관한 PyPI 패키지가 따로 있다(라운드로빈
+#   데이터베이스 라이브러리, openai-whisper와 전혀 다름). `pip install whisper`를
+#   절대 하지 말 것 — 반드시 openai-whisper를 설치해야 import whisper가 STT용
+#   Whisper 모델을 가리킨다.
+# 주의 2: torch 버전을 이 파일 밖에서 임의로 올리거나 내리지 말 것. 이전에
+#   whisperx 같은 다른 패키지를 설치하다 torch가 딸려서 버전이 바뀌면서
+#   torchcodec/nvidia 라이브러리가 전부 깨진 적이 있다(transformers STT가
+#   먹통이 됨). torch 버전을 바꿔야 하면 torchaudio/torchvision까지 같이
+#   맞는 조합으로 올리고 전체 재설치해야 한다.
+# 주의 3: qwen-tts는 pip 의존성 외에 시스템 바이너리 sox가 별도로 필요하다
+#   (apt/brew 등으로 설치, requirements.txt로는 못 채운다).
+
+fastapi==0.141.1
+uvicorn==0.52.4          # ASGI 서버. app.py 자체는 안 쓰지만 실제로 띄우려면 필요하다.
+pydantic==2.13.4
+requests==2.34.2         # ollama_llm.py가 Ollama REST API를 직접 호출하는 데 씀
+
+langgraph==1.2.11
+
+torch==2.13.0            # 주의 2 참고
+transformers==4.57.3
+openai-whisper==20250625 # 주의 1 참고 — import 이름은 whisper
+whisper-timestamped==1.15.9
+qwen-tts==0.1.1          # 주의 3 참고 (시스템 sox 필요)
+
+librosa==1.0.0
+noisereduce==3.0.3
+pydub==0.25.1
+soundfile==0.14.0
+numpy==2.5.2
