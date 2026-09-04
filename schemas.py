@@ -13,6 +13,20 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 
+def camelize_dict(data: Any) -> Any:
+    """자유 형식 dict(예: 게임별 detail)의 키를 재귀적으로 카멜케이스로 바꾼다.
+
+    Pydantic의 alias_generator는 선언된 모델 필드에만 적용되고 dict[str, Any]
+    내부 키는 그대로 둔다 — detail처럼 게임 핸들러가 스네이크케이스로 만든 자유
+    형식 값을 응답에 실을 때는 이 함수로 직접 변환해야 실제로 카멜케이스가 된다.
+    """
+    if isinstance(data, dict):
+        return {to_camel(k): camelize_dict(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [camelize_dict(v) for v in data]
+    return data
+
+
 class CamelModel(BaseModel):
     """와이어 포맷(JSON)은 카멜케이스, 파이썬 쪽은 계속 스네이크케이스로 쓴다.
 
@@ -46,8 +60,11 @@ class UserProfile(CamelModel):
     baseline_rt_seconds: Optional[float] = Field(
         None,
         ge=0.0,
-        description="이름 대기(3-5) 채점용 개인 기준 RT(초). 뷰 테이블에서 주 1회 갱신되는 값. "
-        "없으면 이름 대기의 속도점수는 잠정적으로 100점(불이익 없음)으로 처리한다.",
+        description="이름 대기(3-5) 채점용 개인 기준 RT — 음절당 초(초/음절). "
+        "기준 문항 10개의 (반응시간 합 ÷ 음절 수 합)으로 뷰 테이블에서 주 1회 갱신되는 값. "
+        "채점 시 문항별 목표 단어 음절 수를 곱해 그 문항의 기준시간으로 쓴다(따라말하기의 "
+        "baseline_articulation_rate와 같은 음절 정규화 방식). 없으면 이름 대기의 속도점수는 "
+        "잠정적으로 100점(불이익 없음)으로 처리한다.",
     )
     baseline_articulation_rate: Optional[float] = Field(
         None,
@@ -113,6 +130,7 @@ class YesNoProblem(_ProblemBase):
 class RepetitionProblem(_ProblemBase):
     game_type: Literal["repetition"] = "repetition"
     response_type: Literal["speech"] = "speech"
+    target_sentence: str = Field(..., description="이번 문항에서 듣고 따라 말할 목표 문장. audioUrl과 동일한 문장의 텍스트다.")
 
 
 class SelfExpressionProblem(_ProblemBase):
@@ -230,8 +248,8 @@ class ReportModel(CamelModel):
     )
     naming_score: Optional[float] = Field(
         None,
-        description="이름 대기(3-5) 세션 전체 점수, 0~1. "
-        "0.8×정확도점수(BNT 큐잉 평균/3) + 0.2×(속도점수 평균/100). "
+        description="이름 대기(3-5) 세션 전체 점수, 0~100. "
+        "0.8×정확도점수(BNT 큐잉 평균/3×100) + 0.2×속도점수 평균. "
         "세션에 이름 대기 문항이 없으면 null.",
     )
     repetition_score: Optional[float] = Field(
@@ -245,11 +263,34 @@ class ReportModel(CamelModel):
         description="스스로 말하기(3-3) 세션 전체 점수, 0~20(AQ 자발화 점수 항목과 같은 스케일). "
         "턴별 CIU 기반 aq_term1_excl_disfluency의 평균. 세션에 스스로 말하기 문항이 없으면 null.",
     )
+    understand_score: Optional[float] = Field(
+        None,
+        description="청해이해(3-1, 예/아니오+그림 맞추기) 세션 전체 점수, 0~100. "
+        "턴별 정답률(0/1) 평균×100. 세션에 청해이해 문항이 없으면 null.",
+    )
     category_feedback: dict[str, str] = Field(
         default_factory=dict,
         description="K-WAB 4개 하부검사 카테고리(자발화/청해이해/따라말하기/이름대기)별 한 줄 피드백. "
-        "해당 카테고리에 속하는 문항이 세션에 없으면 그 키는 안 들어간다.",
+        "해당 카테고리에 속하는 문항이 세션에 없으면 그 키는 안 들어간다. "
+        "listen_feedback 등 고정 필드와 내용은 같고, 카테고리명을 키로 자유롭게 순회하고 "
+        "싶은 백엔드를 위해 남겨 둔다.",
     )
+    listen_feedback: Optional[str] = Field(
+        None, description="청해이해(예/아니오+그림 맞추기) 한 줄 피드백. 세션에 없으면 null."
+    )
+    naming_feedback: Optional[str] = Field(
+        None, description="이름 대기 한 줄 피드백. 세션에 없으면 null."
+    )
+    shadowing_feedback: Optional[str] = Field(
+        None, description="따라말하기 한 줄 피드백. 세션에 없으면 null."
+    )
+    self_talk_feedback: Optional[str] = Field(
+        None, description="스스로 말하기 한 줄 피드백. 세션에 없으면 null."
+    )
+    talk_feedback: Optional[str] = Field(
+        None, description="3단계 AI 대화에 대한 한 줄 피드백. 세션에 AI 대화가 없었으면 null."
+    )
+    total_feedback: Optional[str] = Field(None, description="세션 전체에 대한 한 줄 총평.")
 
 
 class SubmitAnswerResponse(CamelModel):
@@ -270,7 +311,13 @@ class SubmitAnswerResponse(CamelModel):
         "report와 동시에 채워질 수 있다(작별 인사 직후 바로 종료되는 경우).",
     )
     report: Optional[ReportModel] = Field(None, description="phase가 'done'일 때만 채워진다.")
-    total_score: Optional[float] = Field(None, description="phase가 'done'일 때만 채워진다.")
+    total_score: Optional[int] = Field(
+        None,
+        ge=0,
+        le=100,
+        description="세션 총점 = K-WAB AQ(실어증지수) 원점수, 0~100 정수(소수점 올림). "
+        "phase가 'done'일 때만 채워진다.",
+    )
     detail: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -310,7 +357,12 @@ class ReportRequest(CamelModel):
 class ReportResponse(CamelModel):
     session_id: str
     report: ReportModel
-    total_score: float = Field(..., ge=0.0, le=1.0)
+    total_score: int = Field(
+        ...,
+        ge=0,
+        le=100,
+        description="세션 총점 = K-WAB AQ(실어증지수) 원점수, 0~100 정수(소수점 올림).",
+    )
 
 
 # --- GET /sessions/{session_id} -------------------------------------------
@@ -341,7 +393,9 @@ class SessionStateResponse(CamelModel):
     total: int = Field(..., description="이번 세션의 전체 문항 수(1·2단계 합).")
     results: list[TurnResultModel]
     report: Optional[ReportModel]
-    total_score: Optional[float]
+    total_score: Optional[int] = Field(
+        None, ge=0, le=100, description="세션 총점 = K-WAB AQ 원점수, 0~100 정수(소수점 올림)."
+    )
     pending_ai_message: Optional[AiMessage] = Field(
         None,
         description="세션이 AI 대화 단계에서 중단된 경우, 재개 시 마지막으로 보낸 AI 발화. "

@@ -83,4 +83,4 @@ class SessionState(TypedDict, total=False):
 
     # 3-0의 17~18번
     report: Optional[dict[str, Any]]
-    total_score: Optional[float]
+    total_score: Optional[int]  # 세션 총점 = AQ(0~100 정수, 소수점 올림)

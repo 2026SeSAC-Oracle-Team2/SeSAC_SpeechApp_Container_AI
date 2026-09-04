@@ -13,7 +13,12 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol
 
-from .config import DifficultySpec, RepetitionAqSpec, repetition_spec_for
+from .config import (
+    DifficultySpec,
+    ListenAqSpec,
+    RepetitionAqSpec,
+    repetition_spec_for,
+)
 from .services import Services
 from .state import Problem, ResponseType, TurnResult
 
@@ -33,6 +38,21 @@ class GameContext:
     repetition_spec: RepetitionAqSpec = field(
         default_factory=lambda: repetition_spec_for(1)
     )  # 따라말하기 전용(AQ 등급 기반). 다른 게임은 안 쓴다.
+    # 알아듣기 전용(AQ 등급 기반). None이면 구버전 그래프 경로 — difficulty(1~3)와
+    # AQ 등급(1~5)은 척도가 달라서, 이 값이 있을 때만 등급표를 따른다.
+    listen_spec: Optional[ListenAqSpec] = None
+    # 이번 배치에서 만들 문항들의 주제(기획 시나리오 플로우). generate_batch(ctx, n)의
+    # n개와 순서가 1:1로 맞는다. 무작위 출제(오늘의 학습)에서는 None이다.
+    topics: Optional[list[str]] = None
+
+
+def topics_line(ctx: "GameContext", n: int) -> str:
+    """생성 프롬프트에 붙일 주제 지시. 주제가 없으면 빈 문자열이라 프롬프트가 그대로다."""
+    topics = (ctx.topics or [])[:n]
+    if not topics:
+        return ""
+    listing = "\n".join(f"{i}. {t}" for i, t in enumerate(topics, start=1))
+    return f"각 문항의 주제(이 순서 그대로 만든다):\n{listing}\n"
 
 
 @dataclass

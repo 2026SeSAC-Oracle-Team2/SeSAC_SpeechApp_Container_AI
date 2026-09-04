@@ -13,9 +13,9 @@ import re
 from typing import Any, Optional
 
 from . import hangul, speech_timing
-from .config import NAMING_RT_CUTOFF_SECONDS
+from .config import NAMING_RT_CUTOFF_SECONDS_PER_SYLLABLE
 from .state import Problem, TurnResult
-from .base import GameContext, GeneratedProblem, make_result, pad_to
+from .base import GameContext, GeneratedProblem, make_result, pad_to, topics_line
 
 _INSTRUCTION = "이것은 무엇입니까?"
 
@@ -89,8 +89,10 @@ class NamingHandler:
         hints_used = max(0, min(2, int(answer.get("hints_used") or 0)))
         bnt_score = 0 if not correct else max(1, 3 - hints_used)
 
+        target_syllable_count = hangul.syllable_count(problem["answer"]["target_word"])
         speed_score = _speed_score(
             metrics["response_time_seconds"],
+            target_syllable_count,
             ctx.user_profile.get("baseline_rt_seconds"),
         )
 
@@ -119,6 +121,7 @@ class NamingHandler:
                 _SELECT_SYSTEM,
                 f"관심사: {', '.join(ctx.user_interests) or '없음'}\n"
                 f"{situation_line}"
+                f"{topics_line(ctx, n)}"
                 f"고를 개수: {n}\n후보:\n{listing}",
             )
             raw_hints = result.get("semantic_hints", {}) or {}
@@ -169,21 +172,43 @@ def _phonemic_hint(target_word: str) -> str:
     return f"첫 소리는 '{cho}'예요."
 
 
-def _speed_score(response_time: float, baseline_rt: Optional[float]) -> float:
-    """RT를 개인 기준 RT·컷오프와 비교해 속도점수(0~100)를 계산한다.
+def _speed_score(
+    response_time: float,
+    syllable_count: int,
+    baseline_rt_per_syllable: Optional[float],
+) -> float:
+    """RT를 목표 단어 음절 수로 정규화해 개인 기준 RT·컷오프와 비교한다(0~100).
 
-    baseline_rt가 없으면(뷰 테이블에 아직 값이 없는 첫 사용자 등) 잠정적으로
-    100점(불이익 없음)으로 둔다 — 이 경우 속도점수를 어떻게 낼지는 아직 팀에서
-    논의 중이라, 자기보고 유창성 레벨(1~5)은 지금은 계산에 반영하지 않는다.
+    동료가 정리한 채점 공식(name_score.py의 calculate_speed_score)을 따라
+    RT를 음절 수에 정비례한 기준시간·컷오프시간과 비교한다 — repetition.py의
+    baseline_articulation_rate(음절/초)처럼 이름 대기도 음절 수로 정규화해야
+    단어 길이가 다른 문항끼리 속도점수를 공평하게 비교할 수 있기 때문이다.
+
+    baseline_rt_per_syllable(개인 기준 RT, 초/음절)이 없으면(뷰 테이블에 아직
+    값이 없는 첫 사용자 등) 잠정적으로 100점(불이익 없음)으로 둔다 — 이 경우
+    속도점수를 어떻게 낼지는 아직 팀에서 논의 중이라, 자기보고 유창성 레벨
+    (1~5)은 지금은 계산에 반영하지 않는다.
     """
-    if baseline_rt is None:
+    # 기준 RT가 없거나 0이면 비교 자체가 성립하지 않는다 — 동료 공식도 이때 100점을
+    # 준다(calculate_speed_score의 `personal_reference_rt == 0` 분기).
+    if not baseline_rt_per_syllable:
         return 100.0
-    if response_time <= baseline_rt:
+    # 목표어에 한글 음절이 없어 정규화가 안 되는 경우(영문 라벨 등). 동료 공식은
+    # 입력 오류로 보고 예외를 던지지만, 세션 중간에 터뜨릴 수는 없으니 측정 불가로
+    # 보고 감점하지 않는다 — 0점을 주면 못 잰 걸 틀린 걸로 치게 된다.
+    if syllable_count <= 0:
         return 100.0
-    cutoff = NAMING_RT_CUTOFF_SECONDS
-    if response_time >= cutoff or cutoff <= baseline_rt:
+
+    personal_reference_time = baseline_rt_per_syllable * syllable_count
+    cutoff_time = NAMING_RT_CUTOFF_SECONDS_PER_SYLLABLE * syllable_count
+
+    if response_time <= personal_reference_time:
+        return 100.0
+    if response_time >= cutoff_time or cutoff_time <= personal_reference_time:
         return 0.0
-    return 100.0 * (1 - (response_time - baseline_rt) / (cutoff - baseline_rt))
+    return 100.0 * (
+        1 - (response_time - personal_reference_time) / (cutoff_time - personal_reference_time)
+    )
 
 
 HANDLER = NamingHandler()

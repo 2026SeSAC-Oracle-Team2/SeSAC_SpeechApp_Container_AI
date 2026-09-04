@@ -2,10 +2,14 @@
 
 LLM을 쓰지 않는다 — 전부 유니코드 산술/편집거리 같은 결정론적 계산이다.
 따라말하기 채점 공식(0.7×반복정확도+0.3×반복속도적합도, 반복정확도가 WER/PCC로
-구성됨)과 speech_timing의 음절 수 계산에 쓰인다.
+구성됨)과 speech_timing의 음절 수 계산에 쓰인다. WER/PCC 계산 방식은 동료가
+정리한 채점 공식 문서(repeat_score.py)를 그대로 따른다.
 """
 
 from __future__ import annotations
+
+import re
+from typing import Optional
 
 _HANGUL_BASE = 0xAC00
 _HANGUL_LAST = 0xD7A3
@@ -47,20 +51,32 @@ def syllable_count(text: str) -> int:
 def consonants(word: str) -> list[str]:
     """단어의 자음(초성+종성이 있으면 종성)을 등장 순서대로 뽑는다.
 
-    초성 자리의 'ㅇ'(예: "아"의 초성)은 실제 발음되는 자음이 아니라 무음
-    자리채움이라 자음으로 안 센다. 종성 자리의 'ㅇ'(예: "강"의 받침, [ŋ] 소리)은
-    실제 자음이라 그대로 센다.
+    초성 'ㅇ'(예: "아"의 초성)은 실제로는 무음 자리채움이지만, PCC 채점 공식
+    (repeat_score.py의 extract_consonants)이 자모 분해 결과에서 모음만 뺀
+    나머지를 그대로 자음으로 세므로 여기서도 그대로 포함한다.
     """
     out: list[str] = []
     for ch in word:
         if not _is_hangul_syllable(ch):
             continue
         cho, _jung, jong = decompose(ch)
-        if cho != "ㅇ":
-            out.append(cho)
+        out.append(cho)
         if jong:
             out.append(jong)
     return out
+
+
+def normalize_text(text: str) -> str:
+    """WER 계산 전에 텍스트를 정규화한다(동료 채점 공식의 normalize_text와 동일).
+
+    소문자화 -> 한글/영문/숫자를 뺀 문장부호 제거 -> 연속 공백을 하나로.
+    STT 전사문에 섞이는 구두점 때문에 실제로는 맞은 단어가 대치로 잡히는 걸
+    막는다.
+    """
+    normalized = text.lower()
+    normalized = re.sub(r"[^가-힣a-z0-9\s]", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.strip()
 
 
 def levenshtein(a: list, b: list) -> int:
@@ -92,18 +108,72 @@ def word_error_rate(target_words: list[str], spoken_words: list[str]) -> float:
     return levenshtein(target_words, spoken_words) / n
 
 
-def _lcs_length(a: list, b: list) -> int:
+def edit_operations(a: list, b: list) -> dict:
+    """레벤슈타인 정렬로 일치/대치/탈락/삽입 개수를 센다(동료 채점 공식의
+    calculate_edit_operations와 동일한 DP+역추적).
+
+    WER의 S/D/I 분해와 PCC의 "정확히 산출된 자음 수"(matches) 모두 이 함수로
+    구한다. 비용이 같을 때는 대치 > 탈락 > 삽입 순으로 고른다(동료 공식과
+    동일한 우선순위라야 같은 입력에 항상 같은 개수가 나온다).
+    """
     n, m = len(a), len(b)
-    prev = [0] * (m + 1)
+    dp = [[0] * (m + 1) for _ in range(n + 1)]
+    backtrack: list[list[Optional[str]]] = [[None] * (m + 1) for _ in range(n + 1)]
+
     for i in range(1, n + 1):
-        curr = [0] * (m + 1)
+        dp[i][0] = i
+        backtrack[i][0] = "deletion"
+    for j in range(1, m + 1):
+        dp[0][j] = j
+        backtrack[0][j] = "insertion"
+
+    for i in range(1, n + 1):
         for j in range(1, m + 1):
             if a[i - 1] == b[j - 1]:
-                curr[j] = prev[j - 1] + 1
+                dp[i][j] = dp[i - 1][j - 1]
+                backtrack[i][j] = "match"
+                continue
+
+            substitution_cost = dp[i - 1][j - 1] + 1
+            deletion_cost = dp[i - 1][j] + 1
+            insertion_cost = dp[i][j - 1] + 1
+            dp[i][j] = min(substitution_cost, deletion_cost, insertion_cost)
+
+            if dp[i][j] == substitution_cost:
+                backtrack[i][j] = "substitution"
+            elif dp[i][j] == deletion_cost:
+                backtrack[i][j] = "deletion"
             else:
-                curr[j] = max(prev[j], curr[j - 1])
-        prev = curr
-    return prev[m]
+                backtrack[i][j] = "insertion"
+
+    matches = substitutions = deletions = insertions = 0
+    i, j = n, m
+    while i > 0 or j > 0:
+        operation = backtrack[i][j]
+        if operation == "match":
+            matches += 1
+            i -= 1
+            j -= 1
+        elif operation == "substitution":
+            substitutions += 1
+            i -= 1
+            j -= 1
+        elif operation == "deletion":
+            deletions += 1
+            i -= 1
+        elif operation == "insertion":
+            insertions += 1
+            j -= 1
+        else:
+            break
+
+    return {
+        "matches": matches,
+        "substitutions": substitutions,
+        "deletions": deletions,
+        "insertions": insertions,
+        "edit_distance": substitutions + deletions + insertions,
+    }
 
 
 def phoneme_correct_ratio(target_word: str, spoken_word: str) -> float:
@@ -115,16 +185,28 @@ def phoneme_correct_ratio(target_word: str, spoken_word: str) -> float:
     다만 원래 PCC는 언어재활사가 실제 발음을 직접 듣고 자음 하나하나를
     맞음/대치/탈락/왜곡으로 판정하는 방식이라, 우리처럼 ASR(음성인식) 텍스트
     결과만 갖고 자동 계산하는 경우엔 그 판정을 대신할 정렬 방법이 필요하다.
-    "정확히 산출된 자음 수"는 목표/발화 자음열을 최장 공통 부분열(LCS)로
-    정렬했을 때 일치하는 자음 개수로 보는데, 이 정렬 방법 자체는 원 PCC
-    논문에 없는, 우리가 정한 방법이다(표준적이고 결정론적인 문자열 정렬
-    기법을 그대로 가져온 것). 또한 ASR은 발음을 있는 그대로 받아적기보다
-    사전에 있는 올바른 단어로 보정하는 경향이 있어, 실제 조음 오류를
-    과소평가할 수 있다는 한계도 있다.
+    "정확히 산출된 자음 수"는 목표/발화 자음열을 레벤슈타인 정렬(edit_operations)
+    했을 때 일치(match)로 잡힌 자음 개수로 본다 — 동료가 정리한 채점 공식
+    문서(repeat_score.py)가 WER과 동일한 정렬 방법을 PCC에도 쓰기 때문에
+    맞췄다. 또한 ASR은 발음을 있는 그대로 받아적기보다 사전에 있는 올바른
+    단어로 보정하는 경향이 있어, 실제 조음 오류를 과소평가할 수 있다는
+    한계도 있다.
     """
     target = consonants(target_word)
     if not target:
         return 100.0
     spoken = consonants(spoken_word)
-    matched = _lcs_length(target, spoken)
+    matched = edit_operations(target, spoken)["matches"]
     return matched / len(target) * 100.0
+
+
+def object_particle(word: str) -> str:
+    """목적격 조사 을/를을 고른다. 받침이 있으면 "을", 없으면 "를".
+
+    한글 음절로 안 끝나면(숫자·영문·기호) 판별할 수 없어 "를"로 둔다 — 알아듣기
+    지문("~를 고르세요")을 만들 때 쓰는 정도라 이 정도 근사로 충분하다.
+    """
+    last = word.strip()[-1:]
+    if not last or not _is_hangul_syllable(last):
+        return "를"
+    return "을" if decompose(last)[2] else "를"

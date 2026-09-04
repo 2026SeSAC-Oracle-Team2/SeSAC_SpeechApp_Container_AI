@@ -27,14 +27,18 @@ def items_for(game_type: str) -> int:
             f"{game_type}의 배정 개수가 config.FIXED_ITEM_COUNTS에 없다"
         ) from None
 
-# 3-6의 1번: 난이도 단계 수 (잠정 3단계)
+# 난이도 단계 수. 구버전 문서 3-6은 "잠정 3단계"였으나, 새 계약이 AQ 등급(1~5)만
+# 보내주므로 5단계로 통일했다 — 3단계로 두면 AQ 4·5등급이 3으로 잘려서, 선택지는
+# 4개를 받는데 오답 거리와 이름대기 난이도는 3등급과 같아지는 이음매가 생겼다.
 DIFFICULTY_MIN = 1
-DIFFICULTY_MAX = 3
+DIFFICULTY_MAX = 5
 
 # 3-6의 3번: 누적 점수가 없는 첫 세션의 시작 난이도
 DEFAULT_DIFFICULTY = 1
 
-# 3-6의 1번: 누적 점수 -> 난이도 매핑 (잠정)
+# 3-6의 1번: 누적 점수 -> 난이도 매핑 (잠정). 구버전 그래프 전용 경로다 —
+# 새 계약에는 cumulativeScore가 없고 AQ 등급이 직접 오므로 이 표는 쓰이지 않는다.
+# 3구간이라 4·5단계에는 닿지 않는다(구버전 동작을 그대로 보존하려고 손대지 않았다).
 # 점수는 0.0 ~ 1.0 정규화 값으로 가정
 SCORE_TO_DIFFICULTY = [
     (0.75, 3),
@@ -62,6 +66,8 @@ class DifficultySpec:
     # 음절 수 2(1단계)/4(3단계)는 명칭실어증 어휘판단 연구(e-csd.org)가 실제로
     # 비교한 조건과 일치한다. 중간값 3(2단계)은 그 연구에 없는, 2와 4 사이를
     # 자연스럽게 보간한 값이라 "왜 3이냐"에는 직접 근거로 답할 수 없다.
+    # 4·5단계의 5/6은 그 연구가 비교한 범위 바깥이라 근거가 더 약하다 — 4를 넘겨
+    # 단조 증가시킨 외삽값이다.
     naming_frequency: str
     naming_max_syllables: int
 
@@ -88,13 +94,31 @@ DIFFICULTY_TABLE: dict[int, DifficultySpec] = {
         naming_frequency="low",
         naming_max_syllables=4,
     ),
+    # 4·5단계는 AQ 등급 5단계에 맞추면서 새로 채웠다. 범주형 축(오답 거리, 목표어
+    # 빈도)은 3단계에서 이미 제일 어려운 값에 닿아 있어 그대로 두고, 수치형 축만
+    # 계속 올린다. 1~3의 값은 구버전 그대로라 기존 난이도는 바뀌지 않는다.
+    4: DifficultySpec(
+        distractor_distance="near",
+        stimulus_complexity=4,
+        blank_words=4,
+        naming_frequency="low",
+        naming_max_syllables=5,
+    ),
+    5: DifficultySpec(
+        distractor_distance="near",
+        stimulus_complexity=5,
+        blank_words=5,
+        naming_frequency="low",
+        naming_max_syllables=6,
+    ),
 }
 
-# 3-2 따라말하기 전용: AQ(실어증지수) 5단계. 다른 게임의 DIFFICULTY_TABLE(1~3단계)과는
-# 별개다 — 이 5단계 체계는 따라말하기 난이도 연구(팀원이 찾은, Kertesz 표준 WAB
-# 4단계 중증도 — 최중증 0-25/중증 26-50/중등도 51-75/경도 76+ — 를 길이·통사구조·
-# 어휘빈도 3축으로 구체화한 자료)에만 근거가 있어서, 다른 게임까지 억지로 5단계로
-# 늘리지 않기로 했다.
+# 3-2 따라말하기 전용 표. 축(길이·통사구조·어휘빈도)이 다른 게임과 달라 표는 따로
+# 두지만, 단계 수는 DIFFICULTY_TABLE과 같은 5단계다 — 세션 하나가 등급 하나로 굴러간다.
+#
+# 이 표의 근거는 따라말하기 난이도 연구(Kertesz 표준 WAB 4단계 중증도 — 최중증
+# 0-25/중증 26-50/중등도 51-75/경도 76+ — 를 길이·통사구조·어휘빈도 3축으로
+# 구체화한 자료)다. 다른 게임의 4·5단계에는 이만한 근거가 없다(DIFFICULTY_TABLE 주석 참고).
 #
 # AQ 등급 컷오프(61.6/80.3/94.68/99.54)는 정상 규준 기반 5단계 표에서 온 것이고,
 # 팀원 자료는 4단계라 그대로 안 맞는다 — 다음과 같이 병합/확장했다:
@@ -156,6 +180,31 @@ def repetition_spec_for(aq_tier: int) -> RepetitionAqSpec:
 PICTURE_MATCH_DISTRACTOR_COUNT = 1
 PICTURE_MATCH_OPTIONS = 1 + PICTURE_MATCH_DISTRACTOR_COUNT
 
+@dataclass(frozen=True)
+class ListenAqSpec:
+    """알아듣기 AQ 등급 1개의 조절값. "알아듣기(LISTEN) 세부화" 기획의 등급표 그대로.
+
+    이미지 난이도와 선택지 개수가 한 표에서 같이 온다 — 등급이 올라가면 선택지가
+    늘다가, 이미지가 EASY에서 HARD로 바뀌는 4등급에서 개수를 한 번 3개로 낮춰
+    난이도 점프를 완충한다(표의 2/3/4/3/4는 오타가 아니다).
+    """
+
+    image_difficulty: str  # "EASY" | "HARD" — 요청 이미지 풀의 difficulty 값과 대조
+    option_count: int  # 선택지 개수(정답 1 + 오답). 텍스트/그림 선택지 공통
+
+
+LISTEN_AQ_TABLE: dict[int, ListenAqSpec] = {
+    1: ListenAqSpec(image_difficulty="EASY", option_count=2),  # AQ < 61.6
+    2: ListenAqSpec(image_difficulty="EASY", option_count=3),  # 61.6 ~ 80.3
+    3: ListenAqSpec(image_difficulty="EASY", option_count=4),  # 80.3 ~ 94.68
+    4: ListenAqSpec(image_difficulty="HARD", option_count=3),  # 94.68 ~ 99.54
+    5: ListenAqSpec(image_difficulty="HARD", option_count=4),  # 99.54 ~
+}
+
+
+def listen_spec_for(aq_tier: int) -> ListenAqSpec:
+    return LISTEN_AQ_TABLE[max(1, min(5, aq_tier))]
+
 # 3-4 문장 완성에서 생성할 문장 개수
 SENTENCE_COMPLETION_CANDIDATES = 3
 
@@ -174,13 +223,15 @@ SENTENCE_COMPLETION_CANDIDATES = 3
 NAMING_HIGH_FREQUENCY_MIN = 500  # 이상이면 고빈도 (근거 불완전 — 위 주석 참고)
 NAMING_LOW_FREQUENCY_MAX = 50  # 미만이면 저빈도, 그 사이는 중빈도 (근거 불완전 — 위 주석 참고)
 
-# 3-5 이름 대기: 속도점수 계산의 컷오프(RT가 이 값을 넘으면 속도점수 0점).
-# 실어증 환자 대상 이름대기 반응시간 연구(Wilson et al., "How Much Time Do People
-# With Aphasia Need to Respond During Picture Naming? Estimating Optimal Response
-# Time Cutoffs Using a Multinomial Ex-Gaussian Approach", JSLHR)가 보고한 최적
-# 컷오프 범위(약 5~10초) 중 관대한 쪽(상한)을 썼다 — 환자에게 불이익을 주는 쪽보다
-# 여유를 주는 쪽이 이 서비스의 다른 잠정값들(노이즈 제거 임계값 등)과 일관된다.
-NAMING_RT_CUTOFF_SECONDS = 10.0
+# 3-5 이름 대기: 속도점수 계산의 컷오프(음절당 초). RT를 음절 수로 정규화해
+# 개인 기준 RT(음절당 초)와 비교하는 동료 채점 공식(name_score.py의
+# cutoff_per_syllable, 기본값 10000ms/3 = 음절당 약 3.33초)을 그대로 따른다 —
+# 값 자체는 실어증 환자 대상 이름대기 반응시간 연구(Wilson et al., "How Much
+# Time Do People With Aphasia Need to Respond During Picture Naming? Estimating
+# Optimal Response Time Cutoffs Using a Multinomial Ex-Gaussian Approach",
+# JSLHR)가 보고한 최적 컷오프 범위(약 5~10초) 중 관대한 쪽(상한, 10초)을
+# DIFFICULTY_TABLE의 중간 음절 수(3음절)로 나눠 음절당 값으로 편 것이다.
+NAMING_RT_CUTOFF_SECONDS_PER_SYLLABLE = 10.0 / 3
 
 # 3-2/3-5 전용: 노이즈 제거. 역치를 보수적으로 잡아 실제 발화가 지워지지 않게 한다.
 # 실제로 STT에 넘기고 저장하는 오디오는 이 값으로 줄인다.
@@ -194,7 +245,8 @@ NOISE_REDUCE_PROP_DECREASE = 0.6  # 0.0(제거 안 함)~1.0(최대 제거). 낮�
 WHISPER_TIMESTAMPED_MODEL = "large-v3-turbo"
 
 # 3단계 AI 대화: LLM이 스스로 끝내지 않을 때의 안전장치. 종료 판단은 LLM이 우선이다.
-MAX_CONVERSATION_TURNS = 6
+# 백엔드 API 계약의 turnCount(8)에 맞춘 값.
+MAX_CONVERSATION_TURNS = 8
 
 # 3단계 약점 진단에 넘길 오답/저점 문항 표본 상한
 MAX_WEAK_POINT_SAMPLES = 5
@@ -204,6 +256,107 @@ WEAK_SCORE_THRESHOLD = 0.5
 
 # AI 대화 턴의 결과에 쓰는 합성 game_type. make_report의 per_game 집계에 그대로 노출된다.
 AI_CONVERSATION_GAME_TYPE = "ai_conversation"
+
+
+# --- 덕담 API 계약(wire_*.py) 전용 -------------------------------------------
+#
+# 아래는 구 세션-그래프 API(위 상수들이 쓰이는 곳)와는 별개로, POST /sessions/today·
+# theme 등 새 8개 엔드포인트(wire_app.py)에서만 쓴다.
+
+# thema(TEST/HOSPITAL/CAFE, 백엔드 확정값) -> situation 프롬프트 문자열. 아직 콘텐츠가
+# 없는 테마(TEST, 향후 추가될 테마 등)는 .get()이 None을 돌려줘 situation 없는 기본
+# 프롬프트로 자연스럽게 강등된다.
+THEMA_SITUATION_MAP: dict[str, str] = {
+    "HOSPITAL": "병원",
+    "CAFE": "카페",
+}
+
+# POST /sessions/theme의 고정 문항 순서. 병원/카페 두 테마의 기획 플로우 다이어그램이
+# 공통으로 이 영역 순서(이름대기-알아듣기-알아듣기-따라말하기-자발화-따라말하기-
+# 이름대기-자발화)를 따른다 — 테마 콘텐츠가 늘어도(시장 등) 이 뼈대는 유지될 것으로
+# 보고 재사용한다. POST /sessions/today는 이 순서를 rng.shuffle로 섞은 버전을 쓴다.
+THEME_FIXED_ORDER: list[str] = [
+    "naming", "listen", "listen", "shadowing",
+    "selfTalk", "shadowing", "naming", "selfTalk",
+]
+
+
+@dataclass(frozen=True)
+class ThemeScenario:
+    """테마 하나의 기획 시나리오 플로우(FlowMap 다이어그램 12문항).
+
+    problem_topics: 1~8번 문제의 턴별 주제. THEME_FIXED_ORDER와 순서가 1:1로 맞는다.
+    talk_topics: 9~12번 이야기하기 4턴의 주제. AI 대화가 4턴으로 고정이라는 뜻이기도
+        하다 — 구버전의 MAX_CONVERSATION_TURNS(8)과 다르다.
+    """
+
+    problem_topics: tuple[str, ...]
+    talk_topics: tuple[str, ...]
+
+
+# 기획 FlowMap 그대로. "유형 순서를 고정하지 않고 이용 스토리라인 순서를 우선한다"는
+# 다이어그램 설명대로, 두 테마가 우연히 같은 유형 순서(THEME_FIXED_ORDER)를 갖게 된
+# 것이지 유형 순서를 먼저 정하고 주제를 끼운 게 아니다 — 테마가 늘면 순서도 달라질 수
+# 있으므로, 새 테마를 넣을 때 THEME_FIXED_ORDER와 맞는지 확인해야 한다(테스트가 잡는다).
+THEME_SCENARIOS: dict[str, ThemeScenario] = {
+    "CAFE": ThemeScenario(
+        problem_topics=(
+            "음료 이름 찾기",
+            "음료 특징 이해",
+            "주문할 음료 찾기",
+            "주문 표현 따라하기",
+            "직접 주문하기",
+            "주문 확인에 응답하기",
+            "카페에서 사용하는 물건 찾기",
+            "음료 받는 상황 설명하기",
+        ),
+        talk_topics=(
+            "주문한 음료 이야기하기",
+            "음료 특징 이야기하기",
+            "카페에서 한 행동 이야기하기",
+            "카페 경험 마무리하기",
+        ),
+    ),
+    "HOSPITAL": ThemeScenario(
+        problem_topics=(
+            "병원 낱말 찾기",
+            "증상 표현 알아듣기",
+            "진료과 안내 알아듣기",
+            "접수 표현 따라하기",
+            "직접 접수하기",
+            "증상 확인에 응답하기",
+            "진료실 물건 찾기",
+            "진료받는 상황 설명하기",
+        ),
+        talk_topics=(
+            "진료받은 순서 이야기하기",
+            "증상 특징 이야기하기",
+            "병원에서 한 행동 이야기하기",
+            "병원 다녀온 경험 마무리하기",
+        ),
+    ),
+}
+
+
+def scenario_for(thema: str) -> Optional[ThemeScenario]:
+    """테마의 시나리오. 대본이 없는 테마(TEST 등)면 None — 그때는 무작위 출제로 떨어진다."""
+    return THEME_SCENARIOS.get(thema)
+
+# 와이어 타입(listen/naming/shadowing/selfTalk) -> 내부 game_type. 내부 코드/테스트가
+# "repetition"/"self_expression" 이름에 이미 광범위하게 의존하므로 내부 이름 자체는
+# 바꾸지 않고, 이 경계에서만 변환한다.
+WIRE_TYPE_TO_INTERNAL: dict[str, str] = {
+    "listen": "listen",
+    "naming": "naming",
+    "shadowing": "repetition",
+    "selfTalk": "self_expression",
+}
+INTERNAL_TYPE_TO_WIRE: dict[str, str] = {v: k for k, v in WIRE_TYPE_TO_INTERNAL.items()}
+
+# userMemory(§10) 규약: 선언형 짧은 문장 최대 10항목, CLOB 하드캡 8KB(백엔드 방어용과
+# 별개로 컨테이너도 예산 안에서 관리).
+USER_MEMORY_MAX_ITEMS = 10
+USER_MEMORY_MAX_BYTES = 8192
 
 
 def resolve_difficulty(user_profile: dict) -> int:

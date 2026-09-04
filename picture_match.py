@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from .config import PICTURE_MATCH_DISTRACTOR_COUNT
+from .hangul import object_particle
 from .state import Problem, TurnResult
-from .base import GameContext, GeneratedProblem, make_result, pad_to
+from .base import GameContext, GeneratedProblem, make_result, pad_to, topics_line
 
 _SELECT_SYSTEM = (
     "너는 언어재활 훈련 문항을 고르는 도우미다. "
@@ -15,6 +16,11 @@ _SELECT_SYSTEM = (
     "상황이 주어지면 그 상황에서 실제로 쓸 법한 것을 우선한다. "
     '반드시 {"choice_indices": [<정수>, ...]} 형태의 JSON만 출력한다.'
 )
+
+
+def _instruction(label: str) -> str:
+    """알아듣기 그림 선택지의 지문. "알아듣기 세부화"의 «"~~~"를 고르세요» 형식."""
+    return f"{label}{object_particle(label)} 고르세요"
 
 
 class PictureMatchHandler:
@@ -33,18 +39,27 @@ class PictureMatchHandler:
         # 2. LLM 한 번으로 정답 이미지 n개를 고른다 (개인화)
         targets = self._pick_targets(ctx, candidates, n)
 
-        # 3. 정답 object 음성을 한 번에 생성
+        # 3. 지문 음성을 한 번에 생성. 정답 단어만 읽으면 뭘 하라는 건지 알 수 없어서,
+        #    "<정답>를 고르세요" 형태의 지시문으로 읽는다(계약 §2 예시 "사과를 고르세요").
+        passages = [_instruction(t["label"]) for t in targets]
         audio_urls = ctx.services.tts.synthesize_batch(
-            [t["label"] for t in targets], session_id=ctx.session_id
+            passages, session_id=ctx.session_id
         )
 
         problems: list[GeneratedProblem] = []
-        for target, audio_url in zip(targets, audio_urls):
-            # 4. 난이도에 따라 의미적 거리를 조절해 오답 조회
+        for target, audio_url, passage in zip(targets, audio_urls, passages):
+            # 4. 난이도에 따라 의미적 거리를 조절해 오답 조회.
+            #    선택지 개수는 AQ 등급표(listen_spec)를 따르고, 그게 없는 구버전
+            #    그래프 경로에서만 고정값을 쓴다.
+            distractor_count = (
+                ctx.listen_spec.option_count - 1
+                if ctx.listen_spec
+                else PICTURE_MATCH_DISTRACTOR_COUNT
+            )
             distractors = ctx.services.image_db.sample_distractors(
                 target=target,
                 distance=ctx.spec.distractor_distance,
-                n=PICTURE_MATCH_DISTRACTOR_COUNT,
+                n=distractor_count,
             )
             # 5. AI가 섞어서 내보내고, 정답 위치는 AI만 기억한다(외부로 나가지 않음)
             options = [
@@ -63,6 +78,7 @@ class PictureMatchHandler:
                         "correct_image_id": target["image_id"],
                         "correct_index": correct_index,
                         "label": target["label"],
+                        "passage": passage,  # TTS가 읽은 지시문 그대로
                     },
                 )
             )
@@ -93,6 +109,7 @@ class PictureMatchHandler:
                 _SELECT_SYSTEM,
                 f"관심사: {', '.join(ctx.user_interests) or '없음'}\n"
                 f"{situation_line}"
+                f"{topics_line(ctx, n)}"
                 f"고를 개수: {n}\n후보:\n{listing}",
             )
             seen: set[int] = set()

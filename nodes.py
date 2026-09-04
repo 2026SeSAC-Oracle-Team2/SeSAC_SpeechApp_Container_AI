@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from collections import deque
 from typing import Any, Optional
@@ -13,6 +14,7 @@ from langgraph.types import interrupt
 
 from . import conversation
 from .config import (
+    AI_CONVERSATION_GAME_TYPE,
     items_for,
     repetition_spec_for,
     resolve_aq_tier,
@@ -26,10 +28,13 @@ from .state import Problem, QueueItem, SessionState
 _REPORT_SYSTEM = (
     "너는 언어재활 훈련 세션의 결과 보고서를 쓴다. "
     "게임별 수행을 요약하고 강점과 약점을 짚은 뒤 다음 세션 권고를 한 줄로 덧붙인다. "
-    "발화 기록은 카테고리별(자발화/청해이해/따라말하기/이름대기)로 표시돼 있다 — "
-    "세션에 등장한 카테고리마다 한 줄 피드백도 따로 쓴다(등장하지 않은 카테고리는 뺀다). "
+    "발화 기록은 카테고리별(자발화/청해이해/따라말하기/이름대기, 그리고 있다면 AI 대화)로 "
+    "표시돼 있다 — 세션에 등장한 카테고리마다 한 줄 피드백도 따로 쓴다(등장하지 않은 "
+    "카테고리는 뺀다). AI 대화 기록이 있으면 그 대화에 대한 한 줄 피드백도 talk_feedback으로 "
+    "쓴다(없으면 빈 문자열). 마지막으로 세션 전체에 대한 총평을 한 줄로 total_feedback에 쓴다. "
     '반드시 {"summary": "<문단>", "strengths": ["..."], "weaknesses": ["..."], '
-    '"recommendation": "<한 줄>", "category_feedback": {"<카테고리명>": "<한 줄>", ...}} '
+    '"recommendation": "<한 줄>", "category_feedback": {"<카테고리명>": "<한 줄>", ...}, '
+    '"talk_feedback": "<한 줄 또는 빈 문자열>", "total_feedback": "<한 줄>"} '
     "형태의 JSON만 출력한다."
 )
 
@@ -41,6 +46,14 @@ _GAME_TO_CATEGORY: dict[str, str] = {
     "repetition": "따라말하기",
     "naming": "이름대기",
     "self_expression": "자발화",
+}
+
+# K-WAB 카테고리(한글) -> 백엔드 API 계약의 고정 피드백 필드명.
+_CATEGORY_TO_FEEDBACK_FIELD: dict[str, str] = {
+    "청해이해": "listen_feedback",
+    "이름대기": "naming_feedback",
+    "따라말하기": "shadowing_feedback",
+    "자발화": "self_talk_feedback",
 }
 
 
@@ -248,21 +261,41 @@ def build_report(results: list[dict[str, Any]], *, services: Services) -> dict[s
     """그래프 상태 없이도 쓸 수 있는 순수 함수 — 백엔드가 턴 결과를 다시 보내는
 
     보고서 요청 엔드포인트(POST /sessions/{id}/report)에서도 이 함수를 그대로 쓴다.
-    """
-    total = sum(r["score"] for r in results) / len(results) if results else 0.0
 
+    세션 총점은 턴 점수 평균이 아니라 AQ다(백엔드 API 계약: "AQ가 세션 총점!").
+    """
     lines = [
         f"- [{_GAME_TO_CATEGORY.get(r['game_type'], r['game_type'])}/{r['game_type']}] "
         f"점수 {r['score']:.2f}" + (f" / 발화: {r['transcript']}" if r.get("transcript") else "")
         for r in results
     ]
     report = services.llm.complete_json(_REPORT_SYSTEM, "\n".join(lines))
+    naming_score = _naming_session_score(results)
+    repetition_score = _repetition_session_score(results)
+    self_expression_score = _self_expression_session_score(results)
+    understand_score = _understand_session_score(results)
+    aq_score = _aq_score(
+        speech_score=self_expression_score,
+        understand_score=understand_score,
+        repeat_score=repetition_score,
+        name_score=naming_score,
+    )
+
+    category_feedback = report.get("category_feedback") or {}
+    has_conversation = any(r["game_type"] == AI_CONVERSATION_GAME_TYPE for r in results)
+
     report["per_game"] = _aggregate_by_game(results)
-    report["naming_score"] = _naming_session_score(results)
-    report["repetition_score"] = _repetition_session_score(results)
-    report["self_expression_score"] = _self_expression_session_score(results)
+    report["naming_score"] = naming_score
+    report["repetition_score"] = repetition_score
+    report["self_expression_score"] = self_expression_score
+    report["understand_score"] = understand_score
     report.setdefault("category_feedback", {})
-    return {"report": report, "total_score": round(total, 4)}
+    for korean_category, field in _CATEGORY_TO_FEEDBACK_FIELD.items():
+        report[field] = category_feedback.get(korean_category)
+    report["talk_feedback"] = (report.get("talk_feedback") or None) if has_conversation else None
+    report.setdefault("total_feedback", None)
+
+    return {"report": report, "total_score": aq_score if aq_score is not None else 0}
 
 
 def _aggregate_by_game(results: list[dict]) -> dict[str, dict[str, float]]:
@@ -276,16 +309,18 @@ def _aggregate_by_game(results: list[dict]) -> dict[str, dict[str, float]]:
 
 
 def _naming_session_score(results: list[dict]) -> Optional[float]:
-    """이름대기 세션 전체 점수(0~1) = 0.8×정확도점수 + 0.2×(속도점수/100).
+    """이름대기 세션 전체 점수(0~100, 동료 채점 공식 name_score.py의
+    calculate_name_score와 같은 스케일) = 0.8×정확도점수 + 0.2×속도점수 평균.
 
-    정확도점수 = 턴별 BNT 원점수(0~3) 평균 / 3.
+    정확도점수(0~100) = 턴별 BNT 원점수(0~3) 평균 / 3 × 100.
+    aq_score.py가 이 값을 받아 10점 만점으로 환산해 AQ에 반영한다.
     """
     turns = [r["detail"] for r in results if r["game_type"] == "naming"]
     if not turns:
         return None
-    accuracy = sum(t["bnt_score"] for t in turns) / (len(turns) * 3)
-    speed = sum(t["speed_score"] for t in turns) / len(turns)
-    return round(0.8 * accuracy + 0.2 * (speed / 100.0), 4)
+    accuracy_score = sum(t["bnt_score"] for t in turns) / (len(turns) * 3) * 100.0
+    speed_score = sum(t["speed_score"] for t in turns) / len(turns)
+    return round(0.8 * accuracy_score + 0.2 * speed_score, 4)
 
 
 def _repetition_session_score(results: list[dict]) -> Optional[float]:
@@ -294,6 +329,43 @@ def _repetition_session_score(results: list[dict]) -> Optional[float]:
     if not turn_scores:
         return None
     return round(sum(turn_scores) / len(turn_scores), 4)
+
+
+def _understand_session_score(results: list[dict]) -> Optional[float]:
+    """청해이해(예/아니오+그림 맞추기) 세션 전체 점수(0~100) = 턴별 정답률 평균×100."""
+    turn_scores = [
+        r["score"] * 100.0 for r in results if r["game_type"] in ("yes_no", "picture_match")
+    ]
+    if not turn_scores:
+        return None
+    return round(sum(turn_scores) / len(turn_scores), 4)
+
+
+def _aq_score(
+    *,
+    speech_score: Optional[float],
+    understand_score: Optional[float],
+    repeat_score: Optional[float],
+    name_score: Optional[float],
+) -> Optional[int]:
+    """K-WAB AQ(실어증지수, 0~100 정수). 동료 채점 공식(aq_score.py의 calculate_aq)에 더해,
+    백엔드 API 계약대로 정수·소수점 올림까지 적용한다 — AQ가 곧 세션 총점이기 때문이다.
+
+    AQ = (자발화 점수(0~20) + 이해력/반복/이름대기 점수를 각각 10점 만점으로
+    환산한 값의 합) × 2. 네 하부검사 중 세션에 없는(None) 게임이 있으면 AQ를
+    낼 수 없다.
+    """
+    if None in (speech_score, understand_score, repeat_score, name_score):
+        return None
+    total_domain_score = (
+        speech_score
+        + understand_score / 10.0
+        + repeat_score / 10.0
+        + name_score / 10.0
+    )
+    clamped = max(0.0, min(100.0, total_domain_score * 2.0))
+    # 부동소수점 오차가 올림 결과를 밀어 올리지 않도록 6자리로 먼저 정리한다.
+    return math.ceil(round(clamped, 6))
 
 
 def _self_expression_session_score(results: list[dict]) -> Optional[float]:

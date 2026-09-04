@@ -46,9 +46,13 @@ class YesNoHandler:
         )
         return [
             GeneratedProblem(
-                audio_url=url, payload={}, answer={"expected": item["answer"].strip()}
+                audio_url=url,
+                payload={},
+                # question: 덕담 API 계약의 listen.py가 WireProblem.passage(TTS가 읽은
+                # 텍스트)를 채우는 데 쓴다. 구버전 그래프 흐름은 이 키를 안 쓴다.
+                answer={"expected": item["answer"].strip(), "question": question},
             )
-            for item, url in zip(items, audio_urls)
+            for item, url, question in zip(items, audio_urls, questions)
         ]
 
     def grade(

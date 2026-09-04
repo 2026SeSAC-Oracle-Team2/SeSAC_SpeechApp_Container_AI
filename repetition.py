@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 from . import hangul, speech_timing
 from .state import Problem, TurnResult
-from .base import GameContext, GeneratedProblem, make_result, pad_to
+from .base import GameContext, GeneratedProblem, make_result, pad_to, topics_line
 
 _GEN_SYSTEM = (
     "너는 언어재활 훈련용 따라말하기 문항을 만든다. "
@@ -58,6 +58,7 @@ class RepetitionHandler:
             _GEN_SYSTEM,
             f"관심사: {', '.join(ctx.user_interests) or '없음'}\n"
             f"{situation_line}"
+            f"{topics_line(ctx, n)}"
             f"어절 수: {low} ~ {high}개\n"
             f"{syllable_line}"
             f"문장 구조: {_SYNTAX_HINT[spec.syntax]}\n"
@@ -73,7 +74,7 @@ class RepetitionHandler:
         return [
             GeneratedProblem(
                 audio_url=url,
-                payload={},
+                payload={"target_sentence": sentence},
                 answer={"target_sentence": sentence},
             )
             for sentence, url in zip(sentences, audio_urls)
@@ -88,9 +89,17 @@ class RepetitionHandler:
         # 간투어/반복 판별용 LLM 호출(measure()) — 채점 자체는 더 이상 LLM이 안 한다.
         metrics = speech_timing.measure(timed, services=ctx.services)
 
-        wer = hangul.word_error_rate(target.split(), transcript.split())
+        normalized_target = hangul.normalize_text(target)
+        normalized_transcript = hangul.normalize_text(transcript)
+        wer = hangul.word_error_rate(
+            normalized_target.split(), normalized_transcript.split()
+        )
         pcc = hangul.phoneme_correct_ratio(target, transcript)
-        repetition_accuracy = 0.5 * (1 - wer) * 100 + 0.5 * pcc
+        # 삽입 오류가 많으면 WER이 1을 넘어 단어정확도가 음수가 된다. 동료 채점 공식은
+        # 이걸 0~100으로 먼저 자른 뒤 PCC와 합치므로(clamp((1-WER)*100)), 여기서도
+        # 같은 자리에서 자른다 — 안 자르면 음수가 PCC 점수까지 깎아먹는다.
+        word_accuracy = max(0.0, min(100.0, (1 - wer) * 100))
+        repetition_accuracy = 0.5 * word_accuracy + 0.5 * pcc
 
         rate = _articulation_rate(metrics["syllable_count"], metrics["articulation_seconds"])
         speed_fit = _speed_fit_score(rate, ctx.user_profile.get("baseline_articulation_rate"))

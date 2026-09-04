@@ -6,7 +6,7 @@ from typing import Any
 
 from . import ciu
 from .state import Problem, TurnResult
-from .base import GameContext, GeneratedProblem, make_result, pad_to
+from .base import GameContext, GeneratedProblem, make_result, pad_to, topics_line
 
 _INSTRUCTION = "그림을 보고 무슨 일이 일어나고 있는지 이야기해 주세요."
 
@@ -70,6 +70,7 @@ class SelfExpressionHandler:
                 _SELECT_SYSTEM,
                 f"관심사: {', '.join(ctx.user_interests) or '없음'}\n"
                 f"상황: {ctx.situation}\n"
+                f"{topics_line(ctx, n)}"
                 f"고를 개수: {n}\n후보:\n{listing}",
             )
             seen: set[int] = set()
