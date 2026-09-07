@@ -11,6 +11,11 @@ gemma4:cloud)를 쓰고 실제 운영 단계에서 같은 모델을 로컬 Ollam
 바꾸면 되고, 이 파일은 안 건드려도 된다. 완전히 로컬 Qwen으로 되돌리려면 `from .hf_llm import QwenLLM`을 추가하고
 아래 build_services()의 llm= 줄을 QwenLLM(device_map=None)으로 바꾸면 된다.
 
+TTS도 같은 이유(CPU 전용 환경이라 로컬 Qwen3-TTS 자기회귀 합성이 너무 느림)로
+로컬 QwenTTS 대신 CLOVA Voice API(ClovaTTS)를 쓴다. NCP_CLOVA_VOICE_CLIENT_ID/
+NCP_CLOVA_VOICE_CLIENT_SECRET 환경변수가 필요하다. clone.wav 기반 보이스
+클로닝은 포기하고 CLOVA의 고정 프리셋 화자를 쓴다(clova_tts.py 참고).
+
 알려진 한계:
 - image_db가 아직 실제 구현체가 없다 — _NotImplementedImageDB가 자리를 채우고
   있어서, 이름대기/그림맞추기/스스로말하기를 실제로 부르면 명확한 에러가 난다.
@@ -32,8 +37,8 @@ from typing import Any, Optional
 import uvicorn
 
 from .app import create_app
+from .clova_tts import ClovaTTS
 from .hf_stt import WhisperSTT
-from .hf_tts import QwenTTS
 from .ollama_llm import OllamaLLM
 from .services import Services
 
@@ -58,15 +63,15 @@ class _NotImplementedImageDB:
 
 
 def build_services() -> Services:
-    """STT/TTS는 CPU에서 돈다(GPU 안 씀). LLM은 지금 Ollama API를 쓴다(위 docstring 참고)."""
+    """STT는 CPU에서 돈다(GPU 안 씀). LLM/TTS는 API를 쓴다(위 docstring 참고)."""
     tts_out_dir = os.environ.get("TTS_OUT_DIR", "/data/audio")
     tts_base_url = os.environ.get("TTS_BASE_URL", "/audio")
 
     return Services(
         llm=OllamaLLM(),  # OLLAMA_HOST/OLLAMA_MODEL/OLLAMA_API_KEY 환경변수로 설정
         stt=WhisperSTT(device="cpu"),
-        tts=QwenTTS(
-            device_map="cpu",  # 기본값이 cuda:0이라 명시적으로 덮어써야 한다
+        tts=ClovaTTS(
+            # NCP_CLOVA_VOICE_CLIENT_ID/NCP_CLOVA_VOICE_CLIENT_SECRET 환경변수로 설정
             out_dir=tts_out_dir,
             base_url=tts_base_url,
         ),

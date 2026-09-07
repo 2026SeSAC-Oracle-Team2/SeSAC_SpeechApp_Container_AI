@@ -120,16 +120,17 @@ DIFFICULTY_TABLE: dict[int, DifficultySpec] = {
 # 0-25/중증 26-50/중등도 51-75/경도 76+ — 를 길이·통사구조·어휘빈도 3축으로
 # 구체화한 자료)다. 다른 게임의 4·5단계에는 이만한 근거가 없다(DIFFICULTY_TABLE 주석 참고).
 #
-# AQ 등급 컷오프(61.6/80.3/94.68/99.54)는 정상 규준 기반 5단계 표에서 온 것이고,
+# AQ 등급 컷오프(60/80/94/98)는 정상 규준 기반 5단계 표(61.6/80.3/94.68/99.54)를
+# 반올림한 값이다 — 원래 값대로면 100점을 받아야만 5등급이 되는 문제가 있어 조정했다.
 # 팀원 자료는 4단계라 그대로 안 맞는다 — 다음과 같이 병합/확장했다:
-#   등급1(AQ<61.6)  = 팀원 자료의 최중증(0-25)+중증(26-50) 병합
-#   등급2(61.6~80.3) = 팀원 자료의 중등도(51-75) 그대로
-#   등급3~5(AQ>=80.3)는 전부 팀원 자료의 "경도(76+)" 한 구간 안에 들어가서, 팀원
+#   등급1(AQ<60)  = 팀원 자료의 최중증(0-25)+중증(26-50) 병합
+#   등급2(60~80) = 팀원 자료의 중등도(51-75) 그대로
+#   등급3~5(AQ>=80)는 전부 팀원 자료의 "경도(76+)" 한 구간 안에 들어가서, 팀원
 #   자료엔 직접 근거가 없다 — CATE 이론(Complexity Account of Treatment Efficacy:
 #   일부러 더 복잡한 구조를 훈련하면 일반화 효과가 크다)이 가리키는 방향(더 길고
 #   복잡하고 저빈도 어휘)으로 3단계로 자체 확장한 값이다. 발표 시 이 부분(3~5단계
 #   구체 수치)은 검증된 근거가 아니라 저희 추정값이라는 걸 구분해서 말해야 한다.
-AQ_TIER_THRESHOLDS = [(99.54, 5), (94.68, 4), (80.3, 3), (61.6, 2), (0.0, 1)]
+AQ_TIER_THRESHOLDS = [(98, 5), (94, 4), (80, 3), (60, 2), (0, 1)]
 
 
 def resolve_aq_tier(aq_score: Optional[float]) -> int:
@@ -194,11 +195,11 @@ class ListenAqSpec:
 
 
 LISTEN_AQ_TABLE: dict[int, ListenAqSpec] = {
-    1: ListenAqSpec(image_difficulty="EASY", option_count=2),  # AQ < 61.6
-    2: ListenAqSpec(image_difficulty="EASY", option_count=3),  # 61.6 ~ 80.3
-    3: ListenAqSpec(image_difficulty="EASY", option_count=4),  # 80.3 ~ 94.68
-    4: ListenAqSpec(image_difficulty="HARD", option_count=3),  # 94.68 ~ 99.54
-    5: ListenAqSpec(image_difficulty="HARD", option_count=4),  # 99.54 ~
+    1: ListenAqSpec(image_difficulty="EASY", option_count=2),  # AQ < 60
+    2: ListenAqSpec(image_difficulty="EASY", option_count=3),  # 60 ~ 80
+    3: ListenAqSpec(image_difficulty="EASY", option_count=4),  # 80 ~ 94
+    4: ListenAqSpec(image_difficulty="HARD", option_count=3),  # 94 ~ 98
+    5: ListenAqSpec(image_difficulty="HARD", option_count=4),  # 98 ~
 }
 
 

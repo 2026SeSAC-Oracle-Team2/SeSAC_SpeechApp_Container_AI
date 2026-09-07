@@ -16,7 +16,7 @@
 fastapi==0.141.1
 uvicorn==0.52.4          # ASGI 서버. app.py 자체는 안 쓰지만 실제로 띄우려면 필요하다.
 pydantic==2.13.4
-requests==2.34.2         # ollama_llm.py가 Ollama REST API를 직접 호출하는 데 씀
+requests==2.34.2         # ollama_llm.py/clova_tts.py가 각각 Ollama/CLOVA Voice REST API를 직접 호출하는 데 씀
 
 langgraph==1.2.11
 
