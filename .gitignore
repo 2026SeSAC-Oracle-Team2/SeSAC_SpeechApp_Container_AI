@@ -1,0 +1,6 @@
+# 비밀값. 실제 값은 .env에만 두고 git에 올리지 않는다.
+.env
+docker-compose.override.yml
+
+__pycache__/
+*.pyc

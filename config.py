@@ -249,11 +249,15 @@ WHISPER_TIMESTAMPED_MODEL = "large-v3-turbo"
 # 컨테이너에서는 이 경로에 볼륨을 마운트하고, 다른 경로를 쓰려면 환경변수
 # WHISPER_MODEL_PATH로 덮어쓴다. 빈 문자열이면 스톡 모델을 이름으로 받아 쓴다.
 #
+# 이 경로는 컨테이너 안 기준이다(호스트 경로 아님) — docker-compose.override.yml의
+# volumes에서 호스트의 모델 캐시 폴더를 /root/.cache로 마운트하므로, 호스트에
+# 파일을 어디 두든 컨테이너 안에서는 /root/.cache/... 로 보인다.
+#
 # 주의: 파일 경로로 로드하면 whisper가 alignment_heads를 자동 주입하지 않는다
 # (persistent=False라 체크포인트에 안 담기고, 스톡 '이름'으로 로드할 때만 붙는다).
 # whisper-timestamped의 DTW 단어 정렬이 여기 의존하므로 hf_stt.py에서 반드시
 # 수동 주입한다 — 빠뜨리면 전사는 멀쩡한데 타임스탬프만 조용히 망가진다.
-WHISPER_TIMESTAMPED_MODEL_PATH = "/mnt/model/docker/model-cache/whisper/lora_v2.pt"
+WHISPER_TIMESTAMPED_MODEL_PATH = "/root/.cache/whisper/lora_v2.pt"
 
 # 3단계 AI 대화: LLM이 스스로 끝내지 않을 때의 안전장치. 종료 판단은 LLM이 우선이다.
 # 백엔드 API 계약의 turnCount(8)에 맞춘 값.

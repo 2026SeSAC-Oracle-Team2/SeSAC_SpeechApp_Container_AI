@@ -12,9 +12,13 @@ gemma4:cloud)를 쓰고 실제 운영 단계에서 같은 모델을 로컬 Ollam
 아래 build_services()의 llm= 줄을 QwenLLM(device_map=None)으로 바꾸면 된다.
 
 TTS도 같은 이유(CPU 전용 환경이라 로컬 Qwen3-TTS 자기회귀 합성이 너무 느림)로
-로컬 QwenTTS 대신 CLOVA Voice API(ClovaTTS)를 쓴다. NCP_CLOVA_VOICE_CLIENT_ID/
-NCP_CLOVA_VOICE_CLIENT_SECRET 환경변수가 필요하다. clone.wav 기반 보이스
-클로닝은 포기하고 CLOVA의 고정 프리셋 화자를 쓴다(clova_tts.py 참고).
+로컬 QwenTTS 대신 API를 쓴다. 원래 CLOVA Voice(clova_tts.py)로 가려 했으나
+NCP 계정에서 서비스 자체가 활성화가 안 돼(콘솔에 CLOVA Voice가 안 보임) 급하게
+OpenAI TTS(openai_tts.py)로 교체했다 — OPENAI_API_KEY 환경변수가 필요하다.
+clone.wav 기반 보이스 클로닝은 OpenAI TTS도 지원 안 해서 고정 프리셋 화자를
+쓴다. 한국어 숫자 발음이 부자연스럽다는 벤치마크 리포트가 있으니(Podonos),
+숫자가 자주 나오는 문항은 실제로 들어보고 확인할 것. clova_tts.py는 나중에
+계정 문제가 풀리면 다시 쓸 수 있게 지우지 않고 남겨뒀다.
 
 알려진 한계:
 - image_db가 아직 실제 구현체가 없다 — _NotImplementedImageDB가 자리를 채우고
@@ -37,9 +41,9 @@ from typing import Any, Optional
 import uvicorn
 
 from .app import create_app
-from .clova_tts import ClovaTTS
 from .hf_stt import WhisperSTT
 from .ollama_llm import OllamaLLM
+from .openai_tts import OpenAITTS
 from .services import Services
 
 
@@ -70,8 +74,8 @@ def build_services() -> Services:
     return Services(
         llm=OllamaLLM(),  # OLLAMA_HOST/OLLAMA_MODEL/OLLAMA_API_KEY 환경변수로 설정
         stt=WhisperSTT(device="cpu"),
-        tts=ClovaTTS(
-            # NCP_CLOVA_VOICE_CLIENT_ID/NCP_CLOVA_VOICE_CLIENT_SECRET 환경변수로 설정
+        tts=OpenAITTS(
+            # OPENAI_API_KEY 환경변수로 설정
             out_dir=tts_out_dir,
             base_url=tts_base_url,
         ),
