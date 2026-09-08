@@ -52,10 +52,11 @@ class NamingHandler:
             raise RuntimeError("이미지 db에 후보가 없다")
 
         targets = self._pick_targets(ctx, candidates, n)
-        # 지시문이 항상 같아 tts는 한 번만 부르고 url을 재사용한다.
-        audio_url = ctx.services.tts.synthesize_batch(
-            [_INSTRUCTION], session_id=ctx.session_id
-        )[0]
+        # [e2e3-H] TTS 스킵 — NAMING 지시문 TTS는 클라가 쓰지 않는다(사용자 계약:
+        # "SELF_TALK, NAMING 유형은 문제 생성에 TTS를 안써도 됨"). audio_url="" 고정 —
+        # 스텁 규약과 동일 형태. wire_nodes._to_wire_problem이 tts_path=""를 그대로
+        # 싣고, BE는 ttsPath==null/공백 분기에서 VOICE_RECORD AI 행을 만들지 않는다.
+        audio_url = ""
         return [
             GeneratedProblem(
                 audio_url=audio_url,
