@@ -39,3 +39,14 @@ class AudioDecodeError(AppError):
 class AiAudioEncodeError(AppError):
     def __init__(self, message: str) -> None:
         super().__init__(500, "AI_AUDIO_ENCODE_FAILED", f"AI 응답 음성을 mp3로 변환하지 못했다: {message}")
+
+
+class SttTranscribeFailedError(AppError):
+    """[e2e3-방어] transcribe_timed 재시도 후에도 실패 — 무음 500 대신 명확한 503.
+
+    wire_app이 이 예외를 잡아 그대로 통과시키면 @app.exception_handler(AppError)가
+    status_code=503·code=STT_TRANSCRIBE_FAILED 응답을 만든다.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(503, "STT_TRANSCRIBE_FAILED", f"음성 인식에 두 번 실패했다(재시도 포함): {message}")
