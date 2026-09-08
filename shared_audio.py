@@ -13,6 +13,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# TTS 백엔드마다 실제로 내보내는 오디오 컨테이너/코덱이 다르다(QwenTTS/CLOVA는
+# wav, OpenAI TTS는 raw AAC 스트림을 .m4a로 저장). ffmpeg에 컨테이너를 정확히
+# 알려줘야 해서 확장자로 매핑한다 — .m4a는 진짜 MP4 컨테이너가 아니라 raw ADTS
+# AAC라 "aac"로 넘겨야 한다("m4a"로 넘기면 MP4 박스 구조를 기대해서 깨진다).
+_PYDUB_FORMAT_BY_SUFFIX = {".wav": "wav", ".mp3": "mp3", ".m4a": "aac", ".aac": "aac"}
+
 
 def user_audio_path(root: str | Path, user_id: str, session_id: str, turn_id: str) -> Path:
     return Path(root) / user_id / session_id / f"{turn_id}_user.m4a"
@@ -38,10 +44,11 @@ def write_ai_audio_mp3(
     session_id: str,
     turn_id: str,
 ) -> Path:
-    """QwenTTS가 만든 로컬 wav를 mp3로 변환해 공유 폴더 규약 경로에 쓴다."""
+    """TTS가 만든 로컬 오디오(wav 또는 m4a/aac)를 mp3로 변환해 공유 폴더 규약 경로에 쓴다."""
     from pydub import AudioSegment
 
     dest = ai_audio_path(root, user_id, session_id, turn_id)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    AudioSegment.from_file(wav_path, format="wav").export(dest, format="mp3")
+    src_format = _PYDUB_FORMAT_BY_SUFFIX.get(Path(wav_path).suffix.lower(), "wav")
+    AudioSegment.from_file(wav_path, format=src_format).export(dest, format="mp3")
     return dest
