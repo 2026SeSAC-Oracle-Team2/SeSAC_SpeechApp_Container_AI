@@ -49,7 +49,9 @@ from .wire_schemas import (
 )
 
 _WIRE_HANDLERS: dict[str, Any] = {
-    "listen": listen.HANDLER,
+    "listen": listen.HANDLER,  # 구 통합 타입 — 구버전 그래프 경로 전용(계약 밖)
+    "listenText": listen.LISTEN_TEXT_HANDLER,
+    "listenPicture": listen.LISTEN_PICTURE_HANDLER,
     "naming": naming.HANDLER,
     "shadowing": repetition.HANDLER,
     "selfTalk": self_expression.HANDLER,
@@ -150,9 +152,21 @@ def _build_pools(
     request: SessionCreateRequest, *, tier: int, rng: random.Random
 ) -> dict[str, RequestImagePool]:
     # 알아듣기 풀만 등급에 따라 EASY/HARD로 좁힌다(등급 4부터 HARD).
+    # v2: listen이 listenText/listenPicture로 분리됨(03a v1.4 계약) —
+    # listenPicture만 image_list_listening을 쓰고, listenText는 이미지 불요.
+    # 빈 풀도 키는 유지한다 — _generate의 pools[wire_type] 접근 KeyError 방지.
     listen_difficulty = listen_spec_for(tier).image_difficulty
     return {
         "listen": RequestImagePool(
+            [
+                image_ref_to_candidate(r.image_id, r.image_name, r.difficulty)
+                for r in request.image_list_listening
+            ],
+            difficulty=listen_difficulty,
+            rng=rng,
+        ),
+        "listenText": RequestImagePool([], rng=rng),  # 텍스트 선택지 — 이미지 안 씀
+        "listenPicture": RequestImagePool(
             [
                 image_ref_to_candidate(r.image_id, r.image_name, r.difficulty)
                 for r in request.image_list_listening
@@ -174,11 +188,27 @@ def _build_pools(
 
 def _to_wire_problem(turn_id: int, wire_type: str, generated: Any) -> WireProblem:
     if wire_type == "listen":
+        # 구 통합 타입(계약 밖) — 구버전 그래프 경로 전용으로 유지
         per_type = {
             "correct": generated.answer["correct_index"],
             "options": generated.answer["options"],
         }
         passage = generated.answer.get("passage") or "다음 중 알맞은 것을 고르세요"
+    elif wire_type == "listenText":
+        # 계약(03a §2): options 전부 text형, correct = options 인덱스(0-based)
+        per_type = {
+            "correct": generated.answer["correct_index"],
+            "options": generated.answer["options"],
+        }
+        passage = generated.answer["passage"]
+    elif wire_type == "listenPicture":
+        # 계약(03a §2): options 전부 image형(context=image_id 문자열),
+        # correct = options 인덱스(0-based)
+        per_type = {
+            "correct": generated.answer["correct_index"],
+            "options": generated.answer["options"],
+        }
+        passage = generated.answer["passage"]
     elif wire_type == "naming":
         per_type = {"correct": generated.answer["target_word"]}
         passage = naming._INSTRUCTION
@@ -497,8 +527,14 @@ def build_problems_report(
         scores = by_type.get(wire_type)
         return sum(scores) / len(scores) if scores else None
 
-    listen_avg, naming_avg, shadowing_avg, self_talk_avg = (
-        avg("listen"),
+    # v2: LISTEN 세분화(listenText/listenPicture) 반영 — BE가 계약대로
+    # listenText/listenPicture type을 보내므로 두 버킷을 통합해 listen 평균을 낸다.
+    # 구 "listen" 버킷은 하위호환(구버전 그래프 경로)으로 병행 유지한다.
+    listen_scores = (by_type.get("listen") or []) + (by_type.get("listenText") or []) + (
+        by_type.get("listenPicture") or []
+    )
+    listen_avg = sum(listen_scores) / len(listen_scores) if listen_scores else None
+    naming_avg, shadowing_avg, self_talk_avg = (
         avg("naming"),
         avg("shadowing"),
         avg("selfTalk"),
