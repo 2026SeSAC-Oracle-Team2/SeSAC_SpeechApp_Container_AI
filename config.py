@@ -245,6 +245,16 @@ NOISE_REDUCE_PROP_DECREASE = 0.6  # 0.0(제거 안 함)~1.0(최대 제거). 낮�
 # (DTW 기반 정렬)로 별도 처리한다 — 다른 게임이 쓰는 transcribe()는 그대로 둔다.
 WHISPER_TIMESTAMPED_MODEL = "large-v3-turbo"
 
+# 파인튜닝 가중치(.pt) 경로. 값이 있으면 위 스톡 모델 대신 이 파일을 쓴다.
+# 컨테이너에서는 이 경로에 볼륨을 마운트하고, 다른 경로를 쓰려면 환경변수
+# WHISPER_MODEL_PATH로 덮어쓴다. 빈 문자열이면 스톡 모델을 이름으로 받아 쓴다.
+#
+# 주의: 파일 경로로 로드하면 whisper가 alignment_heads를 자동 주입하지 않는다
+# (persistent=False라 체크포인트에 안 담기고, 스톡 '이름'으로 로드할 때만 붙는다).
+# whisper-timestamped의 DTW 단어 정렬이 여기 의존하므로 hf_stt.py에서 반드시
+# 수동 주입한다 — 빠뜨리면 전사는 멀쩡한데 타임스탬프만 조용히 망가진다.
+WHISPER_TIMESTAMPED_MODEL_PATH = "/mnt/model/docker/model-cache/whisper/lora_v2.pt"
+
 # 3단계 AI 대화: LLM이 스스로 끝내지 않을 때의 안전장치. 종료 판단은 LLM이 우선이다.
 # 백엔드 API 계약의 turnCount(8)에 맞춘 값.
 MAX_CONVERSATION_TURNS = 8

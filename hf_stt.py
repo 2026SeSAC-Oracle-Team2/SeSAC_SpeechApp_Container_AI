@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -14,7 +15,10 @@ from .config import (
     NOISE_REDUCE_PROP_DECREASE,
     NOISE_REDUCE_STATIONARY,
     WHISPER_TIMESTAMPED_MODEL,
+    WHISPER_TIMESTAMPED_MODEL_PATH,
 )
+
+log = logging.getLogger(__name__)
 
 DEFAULT_MODEL_ID = "openai/whisper-large-v3-turbo"
 SAMPLE_RATE = 16000
@@ -67,15 +71,48 @@ class WhisperSTT:
         return self._pipe
 
     def _ensure_timed_model(self):
-        """transcribe_timed() 전용 openai-whisper 모델(word-level 타임스탬프 신뢰 가능)."""
+        """transcribe_timed() 전용 openai-whisper 모델(word-level 타임스탬프 신뢰 가능).
+
+        가중치 선택 순서:
+          1) 환경변수 WHISPER_MODEL_PATH  (컨테이너에서 명시 지정)
+          2) config.WHISPER_TIMESTAMPED_MODEL_PATH  (기본 마운트 경로)
+          3) 둘 다 비어 있으면 스톡 모델을 이름으로 받아 쓴다
+
+        환경변수로 명시한 경로가 없으면 배포 사고이므로 즉시 실패시킨다. 반면 config
+        기본 경로가 없는 건 로컬 개발처럼 마운트가 없는 상황이라 경고만 남기고 스톡으로
+        넘어간다 — 배포 실수는 소리내서 잡고, 개발 환경은 안 막는다.
+        """
         if self._timed_model is not None:
             return self._timed_model
 
         import whisper
 
-        self._timed_model = whisper.load_model(
-            WHISPER_TIMESTAMPED_MODEL, device=self.device
-        )
+        env_path = os.environ.get("WHISPER_MODEL_PATH")
+        path = env_path if env_path is not None else WHISPER_TIMESTAMPED_MODEL_PATH
+
+        if path and not os.path.exists(path):
+            if env_path is not None:
+                raise FileNotFoundError(
+                    f"WHISPER_MODEL_PATH가 가리키는 가중치가 없다: {path}\n"
+                    "볼륨 마운트를 확인하거나, 스톡 모델을 쓰려면 WHISPER_MODEL_PATH=''로 둘 것."
+                )
+            log.warning(
+                "파인튜닝 가중치가 없어 스톡 모델(%s)로 대체한다: %s",
+                WHISPER_TIMESTAMPED_MODEL, path,
+            )
+            path = ""
+
+        if path:
+            model = whisper.load_model(path, device=self.device)
+            # 파일 경로 로드 시에는 alignment_heads가 안 붙는다(config 주석 참고).
+            # DTW 단어 정렬이 여기 의존하므로 스톡과 같은 값을 명시 주입한다.
+            model.set_alignment_heads(whisper._ALIGNMENT_HEADS[WHISPER_TIMESTAMPED_MODEL])
+            log.info("파인튜닝 가중치 로드: %s", path)
+            self._timed_model = model
+        else:
+            self._timed_model = whisper.load_model(
+                WHISPER_TIMESTAMPED_MODEL, device=self.device
+            )
         return self._timed_model
 
     def transcribe(self, audio: Any) -> str:
