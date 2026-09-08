@@ -291,7 +291,7 @@ THEMA_SITUATION_MAP: dict[str, str] = {
 # 이름대기-자발화)를 따른다 — 테마 콘텐츠가 늘어도(시장 등) 이 뼈대는 유지될 것으로
 # 보고 재사용한다. POST /sessions/today는 이 순서를 rng.shuffle로 섞은 버전을 쓴다.
 THEME_FIXED_ORDER: list[str] = [
-    "naming", "listen", "listen", "shadowing",
+    "naming", "listenText", "listenPicture", "shadowing",
     "selfTalk", "shadowing", "naming", "selfTalk",
 ]
 
