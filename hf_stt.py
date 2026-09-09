@@ -143,7 +143,14 @@ class WhisperSTT:
         array = _decode_any(audio)
         denoised = _denoise(array, SAMPLE_RATE)
         result = wt.transcribe(
-            model, denoised, language=self.language, verbose=False, temperature=0.0
+            model, denoised, language=self.language, verbose=False, temperature=0.0,
+            # 30초 넘는 오디오(내부적으로 여러 청크로 나뉜다)에서 한 청크가 반복
+            # 루프에 빠지면, condition_on_previous_text(기본 True)가 그 오염된
+            # 텍스트를 다음 청크의 프롬프트로 계속 밀어넣어 반복이 끝까지 전파된다.
+            # temperature가 0.0 고정이라(재시도용 온도 사다리가 없음) 한 번 빠지면
+            # 못 빠져나온다. 실제로 246초짜리 파일에서 뒷부분이 같은 단어 반복으로
+            # 무너지는 걸 확인했다 — 청크를 서로 독립시켜 전파를 막는다.
+            condition_on_previous_text=False,
         )
         words = [
             {"word": w["text"].strip(), "start": w["start"], "end": w["end"]}
