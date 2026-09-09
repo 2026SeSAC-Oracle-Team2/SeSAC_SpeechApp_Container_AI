@@ -12,10 +12,13 @@ yes_no.py는 구버전 그래프(nodes.py/registry.py)가 아직 쓰므로 남�
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 from .base import GameContext, GeneratedProblem, pad_to, topics_line
 from .config import listen_spec_for
+
+log = logging.getLogger(__name__)
 
 _GEN_SYSTEM = (
     "너는 언어재활 훈련용 '알아듣기' 문항을 만든다. "
@@ -24,10 +27,20 @@ _GEN_SYSTEM = (
     "질문은 듣고 바로 이해할 수 있게 한 문장으로 짧게 쓴다. "
     "선택지는 모두 같은 종류의 답(예: 전부 날짜, 전부 장소, 전부 음식)이어야 하고, "
     "정답이 하나로만 명확하게 갈려야 한다. "
+    "질문이 선호나 취향을 묻는 형태면 안 된다 — 예를 들어 \"어떤 메뉴를 선택하시겠어요?\" "
+    "처럼 선택지가 전부 같은 종류라도 사용자가 무엇을 골라도 답이 될 수 있는 질문은 "
+    "정답이 하나로 정해지지 않으므로 금지한다. 질문은 반드시 객관적 사실이나 실제로 "
+    "들려준/알려준 정보에 근거해 답이 유일하게 정해지는 것이어야 한다. "
     "상황이 주어지면 그 상황에서 실제로 오갈 법한 질문을 우선한다. "
     '반드시 {"items": [{"question": "<질문>", "options": ["<선택지>", ...], '
     '"answerIndex": <정수>}, ...]} 형태의 JSON만 출력한다.'
 )
+
+# 정답이 하나로 안 정해지는 주관식/선호형 질문일 때 자주 쓰이는 표현. 완벽한 필터는
+# 불가능하다(정상 질문에도 걸릴 수 있음 — 예: "좋아하는 음식이 뭐였다고 했죠?") —
+# 주 해결책은 위 _GEN_SYSTEM 프롬프트 강화이고, 이건 운영 모니터링용 보조 신호다.
+# 걸려도 재생성/거부하지 않는다 — 잘못 거르면 pad_to가 강제로 채워 품질이 더 나빠진다.
+_SUBJECTIVE_TRIGGERS = ("선택하시겠어요", "좋아하는", "고르고 싶은", "원하는")
 
 
 def _user_context(ctx: GameContext) -> str:
@@ -88,6 +101,9 @@ class ListenTextHandler:
         """
         if not isinstance(item, dict) or not str(item.get("question", "")).strip():
             return None
+        question = str(item["question"]).strip()
+        if any(t in question for t in _SUBJECTIVE_TRIGGERS):
+            log.warning("주관식 의심 질문 통과: %r", question)
         raw = item.get("options")
         if not isinstance(raw, list):
             return None
@@ -108,7 +124,7 @@ class ListenTextHandler:
             options, index = kept, kept.index(correct)
 
         return {
-            "question": str(item["question"]).strip(),
+            "question": question,
             "options": options,
             "correct_index": index,
         }

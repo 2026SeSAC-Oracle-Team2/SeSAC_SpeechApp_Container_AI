@@ -8,11 +8,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 from . import hangul, speech_timing
+from .config import RepetitionAqSpec
 from .state import Problem, TurnResult
 from .base import GameContext, GeneratedProblem, make_result, pad_to, topics_line
+
+log = logging.getLogger(__name__)
 
 _GEN_SYSTEM = (
     "너는 언어재활 훈련용 따라말하기 문항을 만든다. "
@@ -38,6 +42,23 @@ _VOCAB_HINT: dict[str, str] = {
     "mid": "일상적으로 쓰이는 단어 위주로 만든다.",
     "low": "일부 자주 쓰이지 않는 단어를 섞어도 된다.",
 }
+
+def _within_spec(sentence: str, spec: RepetitionAqSpec) -> bool:
+    """어절 수(및 word_or_phrase 등급이면 음절 수)가 spec 범위 안인지 확인한다.
+
+    LLM 프롬프트에는 이 값들이 자연어 지시로만 들어가고(_SYNTAX_HINT/_VOCAB_HINT),
+    이를 강제하는 장치가 없었다 — 그래서 같은 등급이어도 문장 길이가 들쭉날쭉했다.
+    이 함수로 생성 결과를 사후 검증해서 걸러낸다.
+    """
+    low, high = spec.words
+    if not (low <= len(sentence.split()) <= high):
+        return False
+    if spec.syllables:
+        syl_low, syl_high = spec.syllables
+        if not (syl_low <= hangul.syllable_count(sentence) <= syl_high):
+            return False
+    return True
+
 
 class RepetitionHandler:
     game_type = "repetition"
@@ -66,7 +87,36 @@ class RepetitionHandler:
             f"만들 개수: {n}",
         )
         sentences = [s.strip() for s in result.get("sentences", []) if s and s.strip()]
-        sentences = pad_to(sentences, n)
+        valid = [s for s in sentences if _within_spec(s, spec)]
+        invalid = [s for s in sentences if s not in valid]
+
+        # 부족분만 1회 재요청한다 — 무제한 재시도는 지연시간 리스크가 있어 배제.
+        if len(valid) < n and invalid:
+            retry_result = ctx.services.llm.complete_json(
+                _GEN_SYSTEM,
+                f"관심사: {', '.join(ctx.user_interests) or '없음'}\n"
+                f"{situation_line}"
+                f"{topics_line(ctx, n)}"
+                f"어절 수: {low} ~ {high}개\n"
+                f"{syllable_line}"
+                f"문장 구조: {_SYNTAX_HINT[spec.syntax]}\n"
+                f"어휘: {_VOCAB_HINT[spec.vocab_frequency]}\n"
+                f"다음 문장들은 어절/음절 수 조건을 벗어나 다시 만든다: {invalid}\n"
+                f"만들 개수: {n - len(valid)}",
+            )
+            retry_sentences = [
+                s.strip() for s in retry_result.get("sentences", []) if s and s.strip()
+            ]
+            valid += [s for s in retry_sentences if _within_spec(s, spec)]
+
+        if len(valid) < n:
+            log.warning(
+                "repetition 스펙(어절 %d~%d) 미달 문장 %d개를 스펙 무시하고 채움",
+                low, high, n - len(valid),
+            )
+            valid += invalid  # 최후 수단: 원래 생성분으로라도 채운다.
+
+        sentences = pad_to(valid, n)
 
         audio_urls = ctx.services.tts.synthesize_batch(
             sentences, session_id=ctx.session_id

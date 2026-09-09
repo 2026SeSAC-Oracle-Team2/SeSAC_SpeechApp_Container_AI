@@ -46,6 +46,23 @@ class RequestImagePool:
     difficulty만은 요청에 실려 오므로(§2 imageListListening) 거를 수 있다. 다만
     해당 난이도 이미지가 하나도 없으면 거르지 않은 풀로 돌아간다 — 문항을 못 만드는
     것보다 난이도가 어긋나는 편이 낫고, 풀 부족 시 완화는 백엔드도 하는 규약이다.
+
+    관심사(interests) 필터도 못 한다 — WireImageRef(wire_schemas.py)엔 image_id/
+    image_name/difficulty뿐이라 태그·카테고리 매칭 근거가 없다(image_ref_to_candidate가
+    category를 항상 빈 문자열로 채우는 이유). 그래서 "그림 문제가 매번 같은 그림만
+    나온다"는 피드백의 원인은 관심사 필터가 후보를 좁혀서가 아니라(애초에 그런 필터가
+    없다), list_candidates가 후보 순서를 셔플 없이 그대로 자르고 + 선택 LLM 호출이
+    temperature=0으로 고정돼 있어(ollama_llm.py/hf_llm.py) 같은 입력에 100% 같은
+    출력이 나오기 때문이다. list_candidates에서 셔플로 완화한다(아래).
+
+    [백엔드 확인 요청] 다음 세 가지를 백엔드 팀에 확인해야 한다:
+      1) imageListListening/Naming/SelfTalk가 이미 관심사 기반으로 큐레이션돼 오는지,
+         매 요청 같은 순서/내용으로 오는지.
+      2) 이미지별 태그/카테고리 필드를 추가로 보내줄 수 있는지 — 없으면 이 컨테이너
+         안에서는 관심사 매칭이 원천적으로 불가능하다.
+      3) 최근 출제 이미지를 다음 요청에서 제외해서 보내줄 수 있는지(세션 간 반복
+         방지) — SessionState가 요청 1건짜리 1회용 객체라 컨테이너 쪽엔 이력을
+         못 쌓는다.
     """
 
     def __init__(
@@ -75,7 +92,12 @@ class RequestImagePool:
         max_syllables: Optional[int] = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        return list(self._images[:limit])
+        # 원본 순서(self._images)는 건드리지 않는다 — get_stimulus()가 self._images[0]에
+        # 의존하므로, 복사본만 섞어서 반환한다. sample_distractors와 같은 self._rng를
+        # 재사용해 인스턴스를 새로 만들 필요가 없다.
+        shuffled = list(self._images)
+        self._rng.shuffle(shuffled)
+        return shuffled[:limit]
 
     def sample_distractors(
         self, *, target: dict[str, Any], distance: str, n: int

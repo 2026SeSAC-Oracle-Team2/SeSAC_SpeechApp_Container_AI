@@ -13,6 +13,7 @@ from typing import Any, Optional
 from langgraph.types import interrupt
 
 from . import conversation
+from .base import TONE_GUIDE
 from .config import (
     AI_CONVERSATION_GAME_TYPE,
     items_for,
@@ -32,6 +33,7 @@ _REPORT_SYSTEM = (
     "표시돼 있다 — 세션에 등장한 카테고리마다 한 줄 피드백도 따로 쓴다(등장하지 않은 "
     "카테고리는 뺀다). AI 대화 기록이 있으면 그 대화에 대한 한 줄 피드백도 talk_feedback으로 "
     "쓴다(없으면 빈 문자열). 마지막으로 세션 전체에 대한 총평을 한 줄로 total_feedback에 쓴다. "
+    f"{TONE_GUIDE} "
     '반드시 {"summary": "<문단>", "strengths": ["..."], "weaknesses": ["..."], '
     '"recommendation": "<한 줄>", "category_feedback": {"<카테고리명>": "<한 줄>", ...}, '
     '"talk_feedback": "<한 줄 또는 빈 문자열>", "total_feedback": "<한 줄>"} '
@@ -208,12 +210,14 @@ def route_after_grade(state: SessionState) -> str:
 
 def analyze_weak_points(state: SessionState, *, services: Services) -> dict[str, Any]:
     """1·2단계에서 틀렸거나 낮은 점수를 받은 문항을 근거로 약점을 진단하고 대화를 연다."""
+    aq_tier = resolve_aq_tier(state.get("user_profile", {}).get("aq_score"))
     return conversation.analyze(
         state.get("problems", []),
         state.get("results", []),
         services=services,
         user_interests=state.get("user_interests", []),
         session_id=state["session_id"],
+        aq_tier=aq_tier,
     )
 
 
@@ -234,6 +238,9 @@ def await_conversation_reply(state: SessionState) -> dict[str, Any]:
 def grade_conversation_turn(state: SessionState, *, services: Services) -> dict[str, Any]:
     reply = state.get("pending_conversation_reply") or {}
     transcript = services.stt.transcribe(reply.get("audio"))
+    # 오프닝(analyze_weak_points)과 같은 계산 — 대화 도중 AI 발화 수준이 안 흔들리도록
+    # 매 턴 같은 방식으로 aq_tier를 다시 구한다.
+    aq_tier = resolve_aq_tier(state.get("user_profile", {}).get("aq_score"))
     return conversation.grade_turn(
         state.get("weak_points", []),
         state["conversation"],
@@ -241,6 +248,7 @@ def grade_conversation_turn(state: SessionState, *, services: Services) -> dict[
         turn_count=state.get("conversation_turn_count", 1),
         session_id=state["session_id"],
         services=services,
+        aq_tier=aq_tier,
     )
 
 

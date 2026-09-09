@@ -8,12 +8,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from .base import clamp
+from .base import TONE_GUIDE, clamp
 from .config import (
     AI_CONVERSATION_GAME_TYPE,
     MAX_CONVERSATION_TURNS,
     MAX_WEAK_POINT_SAMPLES,
     WEAK_SCORE_THRESHOLD,
+    repetition_spec_for,
 )
 from .services import Services
 from .state import ConversationTurn, Problem, TurnResult
@@ -24,6 +25,7 @@ _WEAK_POINT_SYSTEM = (
     "각 항목의 게임 종류와 발화/응답을 보고 구체적인 약점을 짚어낸다. "
     "그런 다음 이 약점을 보완하기 위한 짧은 대화를 시작하는 첫 마디를 만든다. "
     "틀린 문항이 없다면 전반적인 격려와 마무리 대화를 시작하는 첫 마디를 만든다. "
+    f"{TONE_GUIDE} "
     '반드시 {"weak_points": [{"game_type": "...", "issue": "<한 줄>"}, ...], '
     '"opening_message": "<AI가 먼저 건넬 말>"} 형태의 JSON만 출력한다.'
 )
@@ -34,9 +36,41 @@ _TURN_SYSTEM = (
     "발화를 짧게 평가하고 다음 말을 이어가거나 대화를 마무리한다. "
     "충분히 다뤘다고 판단되면 continue를 false로 하고 message에 마무리 인사를 담는다. "
     "continue가 true면 message는 반드시 비어 있지 않아야 한다. "
+    f"{TONE_GUIDE} "
     '반드시 {"score": <0.0~1.0 실수>, "message": "<다음 말 또는 마무리 인사>", '
     '"continue": <true|false>, "reason": "<한 줄>"} 형태의 JSON만 출력한다.'
 )
+
+
+_SYNTAX_KR = {
+    "word_or_phrase": "단어/구 단위의 아주 짧은 문장",
+    "clause": "절 하나로 된 문장",
+    "complex_clause": "절이 여러 개 이어진 복문",
+}
+_VOCAB_KR = {
+    "high": "쉬운 고빈도 어휘",
+    "mid": "중간 빈도 어휘",
+    "low": "다소 어려운 저빈도 어휘도 섞은 어휘",
+}
+
+
+def _level_guidance(aq_tier: int) -> str:
+    """AQ 등급 -> AI 발화 수준 가이드 문장.
+
+    새 등급표를 따로 만들지 않고 REPETITION_AQ_TABLE(config.repetition_spec_for)을
+    그대로 재사용한다 — 이미 WAB 중증도 연구에 근거해 문장 길이/통사구조/어휘빈도를
+    AQ 등급별로 정의해 둔 표라, AI 자신의 발화 수준을 사용자가 처리 가능한 수준에
+    맞추는 데도 같은 축을 그대로 쓸 수 있다. 사용자에게 이 문장을 "따라 하라"는
+    게 아니라, AI가 어느 정도 복잡도로 말해야 할지 정하는 가이드로만 쓴다.
+    """
+    spec = repetition_spec_for(aq_tier)
+    lo, hi = spec.words
+    return (
+        f"사용자 언어능력 수준(AQ 등급 {aq_tier}): 어절 {lo}~{hi}개 안팎, "
+        f"{_SYNTAX_KR[spec.syntax]}, {_VOCAB_KR[spec.vocab_frequency]}를 쓰는 수준이다. "
+        "AI의 opening_message/message도 이 수준에 맞춰 만든다 — "
+        "등급이 낮으면 더 짧고 쉽게, 높으면 자연스럽게 조금 더 복잡한 문장도 쓸 수 있다."
+    )
 
 
 def _pick_weak_results(results: list[TurnResult]) -> list[TurnResult]:
@@ -59,6 +93,7 @@ def analyze(
     services: Services,
     user_interests: list[str],
     session_id: str,
+    aq_tier: int = 1,
 ) -> dict[str, Any]:
     """오답/저점 문항을 뽑아 약점 진단과 대화 시작 메시지를 만든다."""
     by_id = {p["problem_id"]: p for p in problems}
@@ -74,8 +109,10 @@ def analyze(
             + (f" / 목표: {target}" if target else "")
             + (f" / 발화: {r['transcript']}" if r.get("transcript") else "")
         )
-    user_msg = f"관심사: {', '.join(user_interests) or '없음'}\n" + (
-        "\n".join(lines) if lines else "(틀린 문항 없음)"
+    user_msg = (
+        f"{_level_guidance(aq_tier)}\n"
+        f"관심사: {', '.join(user_interests) or '없음'}\n"
+        + ("\n".join(lines) if lines else "(틀린 문항 없음)")
     )
 
     result = services.llm.complete_json(_WEAK_POINT_SYSTEM, user_msg)
@@ -105,6 +142,7 @@ def grade_turn(
     turn_count: int,
     session_id: str,
     services: Services,
+    aq_tier: int = 1,
 ) -> dict[str, Any]:
     """사용자 발화 1턴을 채점하고 다음 상태 갱신 dict를 만든다."""
     history_text = "\n".join(
@@ -115,7 +153,10 @@ def grade_turn(
         "\n".join(f"- {w.get('game_type', '')}: {w.get('issue', '')}" for w in weak_points)
         or "(특별한 약점 없음)"
     )
+    # 오프닝 턴과 같은 수준 가이드를 매 턴 다시 넣는다 — LLM 호출이 매번 독립적이라
+    # 넣지 않으면 대화가 이어질수록 수준이 오프닝과 다르게 흔들릴 수 있다.
     user_msg = (
+        f"{_level_guidance(aq_tier)}\n\n"
         f"약점:\n{weak_text}\n\n대화 기록:\n{history_text}\n\n사용자의 최신 발화: {transcript}"
     )
     verdict = services.llm.complete_json(_TURN_SYSTEM, user_msg)
