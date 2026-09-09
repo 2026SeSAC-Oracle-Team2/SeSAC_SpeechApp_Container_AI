@@ -142,16 +142,37 @@ class WhisperSTT:
         model = self._ensure_timed_model()
         array = _decode_any(audio)
         denoised = _denoise(array, SAMPLE_RATE)
-        result = wt.transcribe(
-            model, denoised, language=self.language, verbose=False, temperature=0.0,
-            # 30초 넘는 오디오(내부적으로 여러 청크로 나뉜다)에서 한 청크가 반복
-            # 루프에 빠지면, condition_on_previous_text(기본 True)가 그 오염된
-            # 텍스트를 다음 청크의 프롬프트로 계속 밀어넣어 반복이 끝까지 전파된다.
-            # temperature가 0.0 고정이라(재시도용 온도 사다리가 없음) 한 번 빠지면
-            # 못 빠져나온다. 실제로 246초짜리 파일에서 뒷부분이 같은 단어 반복으로
-            # 무너지는 걸 확인했다 — 청크를 서로 독립시켜 전파를 막는다.
-            condition_on_previous_text=False,
-        )
+        # [e2e3-방어] whisper_timestamped 세그먼트 assert 불일치(간헐 500 실측 —
+        # "whisper_segments (1) != timestamped_word_segments (2)") 재시도 1회.
+        # 같은 입력 재호출 시 200 회복 실측. 재실패는 그대로 raise — FastAPI 전역
+        # 핸들러가 500으로 감싸지만, 여기선 AssertionError를 명확한 런타임 에러로
+        # 변환해 "재시도 후에도 실패"임을 로그·응답에 남긴다(무음 catch 금지 계약).
+        #
+        # condition_on_previous_text=False: 30초 넘는 오디오(내부적으로 여러 청크로
+        # 나뉜다)에서 한 청크가 반복 루프에 빠지면, 기본값 True가 그 오염된 텍스트를
+        # 다음 청크의 프롬프트로 계속 밀어넣어 반복이 끝까지 전파된다. temperature가
+        # 0.0 고정이라(재시도용 온도 사다리가 없음) 한 번 빠지면 못 빠져나온다.
+        # 246초짜리 파일에서 뒷부분이 같은 단어 반복으로 무너지는 걸 확인했다 —
+        # 청크를 서로 독립시켜 전파를 막는다.
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                result = wt.transcribe(
+                    model, denoised, language=self.language, verbose=False, temperature=0.0,
+                    condition_on_previous_text=False,
+                )
+                last_error = None
+                break
+            except AssertionError as exc:
+                last_error = exc
+                log.warning(
+                    "transcribe_timed 세그먼트 assert 불일치 — 재시도 %d/1: %s",
+                    attempt + 1, exc,
+                )
+        if last_error is not None:
+            from .errors import SttTranscribeFailedError
+
+            raise SttTranscribeFailedError(str(last_error)) from last_error
         words = [
             {"word": w["text"].strip(), "start": w["start"], "end": w["end"]}
             for seg in result.get("segments", [])

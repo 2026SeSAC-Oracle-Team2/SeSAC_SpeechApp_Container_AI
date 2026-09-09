@@ -9,6 +9,12 @@
 채점은 백엔드가 직접 한다(§5.1 "LISTEN은 컨테이너 호출이 없다 — perType.correct를
 받은 백엔드가 자체 채점") — grade()는 GameHandler Protocol을 만족시키기 위한
 자리표시자일 뿐 실제로 호출되지 않는다.
+
+v2 (2026-09-08, feat/E2E-connection): 03a v1.4 계약의 LISTEN 세분화 반영 —
+wire 계약은 "listen" 단일 타입을 폐지하고 listenText(텍스트 선택지)/
+listenPicture(이미지 선택지) 2종으로 분리했다. ListenTextHandler/ListenPictureHandler는
+wire 계약의 분화된 타입용이고, 구 ListenHandler(통합)는 구버전 그래프 경로 호환용으로
+그대로 남긴다.
 """
 
 from __future__ import annotations
@@ -101,4 +107,37 @@ class ListenHandler:
         )
 
 
+class ListenTextHandler(ListenHandler):
+    """wire 계약의 listenText(텍스트 선택지 알아듣기) 전용 핸들러.
+
+    계약(03a §2): perType.options가 전부 text형. listen_text.py를 직접 호출하며
+    통합 ListenHandler처럼 절반/절반 나누지 않는다 — 시나리오 주제가 오면 이 배치가
+    그 주제의 정확한 소유자다(1:1 zip 유지).
+    """
+
+    game_type = "listenText"
+    response_type = "choice"
+    enabled = True
+
+    def generate_batch(self, ctx: GameContext, n: int) -> list[GeneratedProblem]:
+        return self._from_listen_text(ctx, n)
+
+
+class ListenPictureHandler(ListenHandler):
+    """wire 계약의 listenPicture(이미지 선택지 알아듣기) 전용 핸들러.
+
+    계약(03a §2): perType.options가 전부 image형(context=image_id 문자열).
+    image_list_listening 풀만 사용한다.
+    """
+
+    game_type = "listenPicture"
+    response_type = "choice"
+    enabled = True
+
+    def generate_batch(self, ctx: GameContext, n: int) -> list[GeneratedProblem]:
+        return self._from_picture_match(ctx, n)
+
+
 HANDLER = ListenHandler()
+LISTEN_TEXT_HANDLER = ListenTextHandler()
+LISTEN_PICTURE_HANDLER = ListenPictureHandler()

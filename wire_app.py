@@ -59,6 +59,10 @@ def _finalize_tts_paths(
     지점이 다를 수 있어서, 절대경로를 그대로 주면 백엔드가 파일을 못 찾는다.
     """
     for problem in response.problem_list:
+        # [e2e3-H] TTS 스킵 유형(tts_path="" — naming/selfTalk)은 mp3 변환 대상이 아니다.
+        # resolve_tts_wav_path("")가 ValueError로 전체 세션 생성을 500으로 만드는 것을 방지.
+        if not problem.tts_path:
+            continue
         try:
             wav_path = shared_audio.resolve_tts_wav_path(
                 problem.tts_path, tts_out_dir=tts_dir, tts_base_url=tts_base_url

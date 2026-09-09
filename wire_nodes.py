@@ -49,7 +49,9 @@ from .wire_schemas import (
 )
 
 _WIRE_HANDLERS: dict[str, Any] = {
-    "listen": listen.HANDLER,
+    "listen": listen.HANDLER,  # 구 통합 타입 — 구버전 그래프 경로 전용(계약 밖)
+    "listenText": listen.LISTEN_TEXT_HANDLER,
+    "listenPicture": listen.LISTEN_PICTURE_HANDLER,
     "naming": naming.HANDLER,
     "shadowing": repetition.HANDLER,
     "selfTalk": self_expression.HANDLER,
@@ -150,9 +152,21 @@ def _build_pools(
     request: SessionCreateRequest, *, tier: int, rng: random.Random
 ) -> dict[str, RequestImagePool]:
     # 알아듣기 풀만 등급에 따라 EASY/HARD로 좁힌다(등급 4부터 HARD).
+    # v2: listen이 listenText/listenPicture로 분리됨(03a v1.4 계약) —
+    # listenPicture만 image_list_listening을 쓰고, listenText는 이미지 불요.
+    # 빈 풀도 키는 유지한다 — _generate의 pools[wire_type] 접근 KeyError 방지.
     listen_difficulty = listen_spec_for(tier).image_difficulty
     return {
         "listen": RequestImagePool(
+            [
+                image_ref_to_candidate(r.image_id, r.image_name, r.difficulty)
+                for r in request.image_list_listening
+            ],
+            difficulty=listen_difficulty,
+            rng=rng,
+        ),
+        "listenText": RequestImagePool([], rng=rng),  # 텍스트 선택지 — 이미지 안 씀
+        "listenPicture": RequestImagePool(
             [
                 image_ref_to_candidate(r.image_id, r.image_name, r.difficulty)
                 for r in request.image_list_listening
@@ -174,11 +188,27 @@ def _build_pools(
 
 def _to_wire_problem(turn_id: int, wire_type: str, generated: Any) -> WireProblem:
     if wire_type == "listen":
+        # 구 통합 타입(계약 밖) — 구버전 그래프 경로 전용으로 유지
         per_type = {
             "correct": generated.answer["correct_index"],
             "options": generated.answer["options"],
         }
         passage = generated.answer.get("passage") or "다음 중 알맞은 것을 고르세요"
+    elif wire_type == "listenText":
+        # 계약(03a §2): options 전부 text형, correct = options 인덱스(0-based)
+        per_type = {
+            "correct": generated.answer["correct_index"],
+            "options": generated.answer["options"],
+        }
+        passage = generated.answer["passage"]
+    elif wire_type == "listenPicture":
+        # 계약(03a §2): options 전부 image형(context=image_id 문자열),
+        # correct = options 인덱스(0-based)
+        per_type = {
+            "correct": generated.answer["correct_index"],
+            "options": generated.answer["options"],
+        }
+        passage = generated.answer["passage"]
     elif wire_type == "naming":
         per_type = {"correct": generated.answer["target_word"]}
         passage = naming._INSTRUCTION
@@ -395,8 +425,31 @@ _AICHAT_SYSTEM = (
     "끝난 세션이니 정답/오답을 지적하거나 다시 채점하지 않는다. "
     "사용자에 대해 이미 알고 있는 개인 정보가 있으면 자연스럽게 활용해서 개인화된 질문을 "
     "건넨다. 대화 기록이 비어 있으면 네가 먼저 말을 건네는 것이다. "
+    "[e2e3-G] 말투 규약: 답변은 두세 문장(최대 3문장) 이내로 짧게 한다. 실제 발화를 "
+    "기반으로 대화한다. 이모티콘·이모지·반복 자음(ㅋㅋㅋ·ㅜㅜ·ㅠㅠ·아하하 등) 사용 금지. "
+    "다정하고 차분한 말투를 유지한다. "
     '반드시 {"message": "<다음에 할 말>"} 형태의 JSON만 출력한다.'
 )
+
+
+def _clamp_sentences(message: str, max_sentences: int = 3) -> str:
+    """[e2e3-G] 길이 초과 방어 — LLM만 믿지 않고 코드로 절단한다(지시서 [G]).
+
+    문장 종결 부호(. ! ? … · 공백 뒤 옵션) 기준으로 나눠 첫 max_sentences개만 유지.
+    한국어 종결(요/다/까) + 부호 조합도 종결부호 뒤에서 자른다. 이모지/반복자음은
+    프롬프트로 금지하지만 통과한 경우 후처리에서 반복 자음 2+ 연쇄를 1개로 축약한다.
+    """
+    import re as _re
+
+    text = (message or "").strip()
+    if not text:
+        return text
+    # 반복 자음/모음 축약 (ㅋㅋㅋ→ㅋ, ㅜㅜ→ㅜ) — 종결부호가 아닌 문자만
+    text = _re.sub(r"([ㅋㅎㅜㅠ])\1+", r"\1", text)
+    # 문장 분할 — 종결부호(.!?… 다음 공백/끝) 기준
+    parts = _re.split(r"(?<=[.!?…])\s+", text)
+    kept = [p.strip() for p in parts if p.strip()][:max_sentences]
+    return " ".join(kept) if kept else text
 
 
 def aichat_reply(
@@ -440,6 +493,7 @@ def aichat_reply(
 
     result = services.llm.complete_json(_AICHAT_SYSTEM, user_msg)
     message = (result.get("message") or "").strip() or "오늘 하루도 고생 많으셨어요!"
+    message = _clamp_sentences(message)
 
     return AichatResponse(
         session_id=request.session_id,
@@ -497,8 +551,14 @@ def build_problems_report(
         scores = by_type.get(wire_type)
         return sum(scores) / len(scores) if scores else None
 
-    listen_avg, naming_avg, shadowing_avg, self_talk_avg = (
-        avg("listen"),
+    # v2: LISTEN 세분화(listenText/listenPicture) 반영 — BE가 계약대로
+    # listenText/listenPicture type을 보내므로 두 버킷을 통합해 listen 평균을 낸다.
+    # 구 "listen" 버킷은 하위호환(구버전 그래프 경로)으로 병행 유지한다.
+    listen_scores = (by_type.get("listen") or []) + (by_type.get("listenText") or []) + (
+        by_type.get("listenPicture") or []
+    )
+    listen_avg = sum(listen_scores) / len(listen_scores) if listen_scores else None
+    naming_avg, shadowing_avg, self_talk_avg = (
         avg("naming"),
         avg("shadowing"),
         avg("selfTalk"),

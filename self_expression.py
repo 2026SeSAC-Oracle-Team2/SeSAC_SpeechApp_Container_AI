@@ -25,10 +25,8 @@ class SelfExpressionHandler:
     enabled = True
 
     def generate_batch(self, ctx: GameContext, n: int) -> list[GeneratedProblem]:
-        # 지시문이 항상 같아 tts도 한 번만 부른다.
-        audio_url = ctx.services.tts.synthesize_batch(
-            [_INSTRUCTION], session_id=ctx.session_id
-        )[0]
+        # [e2e3-H] TTS 스킵 — SELF_TALK도 NAMING과 동일 계약(지시서 [H]). audio_url="" 고정.
+        audio_url = ""
 
         if ctx.situation:
             # 상황말하기: 후보 목록 + LLM 선택으로 상황에 맞는 장면을 고른다.
